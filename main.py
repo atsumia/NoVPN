@@ -7,7 +7,6 @@ import re
 import urllib.parse
 import uuid
 from datetime import datetime
-import ipaddress
 
 import aiohttp
 import uvicorn
@@ -57,6 +56,7 @@ class ProxyServer(Base):
     protocol = Column(String)
     ping_ms = Column(Integer, default=999)
     is_alive = Column(Boolean, default=True)
+    tier = Column(Integer, default=3)
     last_checked = Column(DateTime, default=datetime.utcnow)
 
 
@@ -67,29 +67,25 @@ async def init_db():
     logger.info("[DB] База данных готова.")
 
 
-# Базы, созданные специально для обхода ТСПУ и белых списков в РФ
-PRIORITY_RU_SOURCES = [
+# Базы, созданные специально под обход белых списков и ТСПУ в РФ
+RU_WHITELIST_SOURCES = [
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-all.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt",
 ]
 
-SECONDARY_SOURCES = [
-    "https://raw.githubusercontent.com/yaney01/telegram-collector/main/protocols/reality",
-    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/reality",
-    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/hysteria2",
-    "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Splitted-By-Protocol/reality.txt",
+RU_FALLBACK_SOURCES = [
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt",
 ]
 
 TELEGRAM_CHANNELS = [
     "igareq",
     "vpn_free_russia",
     "VLESS_REALITY",
-    "DirectVPN",
     "vless_configs",
     "reality_free",
-    "v2ray_outlinefree",
     "vpn_fail_ru",
 ]
 
@@ -103,24 +99,32 @@ RU_WHITE_DOMAINS = (
     "gosuslugi.ru",
     "ozon.ru",
     "wildberries.ru",
+    "wb.ru",
     "tinkoff.ru",
+    "tbank.ru",
     "sberbank.ru",
+    "sber.ru",
     "kinopoisk.ru",
     "rutube.ru",
     "rambler.ru",
-    "wb.ru",
     "2gis.ru",
+    "megafon.ru",
+    "mts.ru",
+    "beeline.ru",
+    "t2.ru",
+    "tele2.ru",
+    "avito.ru",
 )
 
 BLOCKED_IP_PREFIXES = (
     "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.",
     "104.22.", "104.23.", "104.24.", "104.25.", "104.26.", "104.27.",
-    "104.28.", "172.64.", "172.65.", "172.66.", "172.67.",
-    "151.101.",
+    "104.28.", "104.29.", "104.30.", "104.31.", "172.64.", "172.65.",
+    "172.66.", "172.67.", "151.101.",
 )
 
 
-def parse_proxy_uri(uri: str, is_ru_priority_source: bool = False) -> dict | None:
+def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
     uri = uri.strip()
     if not uri or uri.startswith("#"):
         return None
@@ -128,7 +132,6 @@ def parse_proxy_uri(uri: str, is_ru_priority_source: bool = False) -> dict | Non
         parsed = urllib.parse.urlparse(uri)
         scheme = parsed.scheme.lower()
 
-        # Разрешаем только протоколы, способные пробить ТСПУ в РФ
         if scheme not in ("vless", "hy2", "hysteria2"):
             return None
 
@@ -136,34 +139,40 @@ def parse_proxy_uri(uri: str, is_ru_priority_source: bool = False) -> dict | Non
         if not host:
             return None
 
-        # Отсекаем заблокированные в РФ пулы Cloudflare Anycast и Fastly
         if any(host.startswith(p) for p in BLOCKED_IP_PREFIXES):
             return None
 
         query_params = urllib.parse.parse_qs(parsed.query)
         port = parsed.port or 443
-
+        net_type = query_params.get("type", ["tcp"])[0].lower()
         sni = query_params.get("sni", [""])[0].lower()
-        has_ru_sni = any(d in sni for d in RU_WHITE_DOMAINS) or sni.endswith(".ru")
+
+        is_ru_sni = any(d in sni for d in RU_WHITE_DOMAINS) or sni.endswith(".ru")
 
         if scheme == "vless":
             security = query_params.get("security", [""])[0].lower()
             pbk = query_params.get("pbk", [""])[0]
-            flow = query_params.get("flow", [""])[0].lower()
-            net_type = query_params.get("type", ["tcp"])[0].lower()
 
-            # Исключаем устаревшие WebSocket/gRPC без Reality
-            if security != "reality" and not pbk and "vision" not in flow:
+            # Полный запрет обычного TLS. Допускается только Reality с ключом pbk
+            if security != "reality" or not pbk:
                 return None
+
+        # Определение категории приоритета
+        if source_type == "whitelist" or is_ru_sni:
+            tier = 1
+        elif source_type == "ru_fallback":
+            tier = 2
+        else:
+            tier = 3
 
         return {
             "uri": uri,
             "scheme": scheme,
             "host": host,
             "port": port,
+            "net_type": net_type,
             "sni": sni,
-            "has_ru_sni": has_ru_sni,
-            "is_ru_priority": is_ru_priority_source,
+            "tier": tier,
         }
     except Exception:
         return None
@@ -218,37 +227,48 @@ async def fetch_telegram_channel(session: aiohttp.ClientSession, channel: str) -
 
 
 async def update_proxies_task():
-    logger.info("[Collector] Сбор серверов из баз обхода блокировок РФ...")
+    logger.info("[Collector] Сбор серверов из баз обхода белых списков...")
     candidates = {}
 
     async with aiohttp.ClientSession() as session:
-        ru_tasks = [fetch_feed(session, url) for url in PRIORITY_RU_SOURCES]
-        ru_results = await asyncio.gather(*ru_tasks, return_exceptions=True)
-        for res in ru_results:
+        wl_tasks = [fetch_feed(session, url) for url in RU_WHITELIST_SOURCES]
+        wl_results = await asyncio.gather(*wl_tasks, return_exceptions=True)
+        for res in wl_results:
             if isinstance(res, list):
                 for line in res:
-                    meta = parse_proxy_uri(line, is_ru_priority_source=True)
+                    meta = parse_proxy_uri(line, source_type="whitelist")
                     if meta and meta["uri"] not in candidates:
                         candidates[meta["uri"]] = meta
 
-        sec_tasks = [fetch_feed(session, url) for url in SECONDARY_SOURCES]
-        tg_tasks = [fetch_telegram_channel(session, ch) for ch in TELEGRAM_CHANNELS]
-        other_results = await asyncio.gather(*sec_tasks, *tg_tasks, return_exceptions=True)
-        for res in other_results:
+        fb_tasks = [fetch_feed(session, url) for url in RU_FALLBACK_SOURCES]
+        fb_results = await asyncio.gather(*fb_tasks, return_exceptions=True)
+        for res in fb_results:
             if isinstance(res, list):
                 for line in res:
-                    meta = parse_proxy_uri(line, is_ru_priority_source=False)
+                    meta = parse_proxy_uri(line, source_type="ru_fallback")
+                    if meta and meta["uri"] not in candidates:
+                        candidates[meta["uri"]] = meta
+
+        tg_tasks = [fetch_telegram_channel(session, ch) for ch in TELEGRAM_CHANNELS]
+        tg_results = await asyncio.gather(*tg_tasks, return_exceptions=True)
+        for res in tg_results:
+            if isinstance(res, list):
+                for line in res:
+                    meta = parse_proxy_uri(line, source_type="tg")
                     if meta and meta["uri"] not in candidates:
                         candidates[meta["uri"]] = meta
 
     candidates_list = list(candidates.values())
-    logger.info(f"[Collector] Отфильтровано {len(candidates_list)} узлов без Cloudflare/Trojan.")
+    logger.info(f"[Collector] Отфильтровано {len(candidates_list)} чистых Reality/Hy2 серверов.")
 
     if not candidates_list:
         logger.warning("[Collector] Новые узлы не получены, сохраняем существующую базу.")
         return
 
-    check_pool = candidates_list[:200]
+    # Сортировка кандидатов: Tier 1 (Белые списки / RU SNI) проверяются первыми
+    candidates_list.sort(key=lambda x: (x["tier"], 0 if x["net_type"] == "tcp" else 1))
+
+    check_pool = candidates_list[:180]
     valid_servers = []
 
     for i in range(0, len(check_pool), 30):
@@ -258,18 +278,20 @@ async def update_proxies_task():
 
         for meta, ping in zip(chunk, results):
             if ping is not None:
-                score = ping
-                if meta["is_ru_priority"]:
-                    score -= 300
-                if meta["has_ru_sni"]:
-                    score -= 200
-                valid_servers.append((meta, ping, score))
+                valid_servers.append((meta, ping))
 
     if valid_servers:
-        valid_servers.sort(key=lambda x: x[2])
-        top_servers = [(item[0], item[1]) for item in valid_servers[:45]]
+        # Приоритет: сначала Tier 1 (белые списки), затем TCP перед gRPC, затем минимальный пинг
+        valid_servers.sort(
+            key=lambda x: (
+                x[0]["tier"],
+                0 if x[0]["net_type"] == "tcp" else 1,
+                x[1],
+            )
+        )
+        top_servers = valid_servers[:40]
     else:
-        top_servers = [(item, 90) for item in candidates_list[:35]]
+        top_servers = [(item, 100) for item in candidates_list[:30]]
 
     async with AsyncSessionLocal() as db_session:
         await db_session.execute(delete(ProxyServer))
@@ -279,6 +301,7 @@ async def update_proxies_task():
                 protocol=meta["scheme"],
                 ping_ms=ping,
                 is_alive=True,
+                tier=meta["tier"],
                 last_checked=datetime.utcnow(),
             )
             db_session.add(srv)
@@ -309,8 +332,8 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
     servers_res = await db.execute(
         select(ProxyServer)
         .where(ProxyServer.is_alive == True)
-        .order_by(ProxyServer.ping_ms.asc())
-        .limit(40)
+        .order_by(ProxyServer.tier.asc(), ProxyServer.ping_ms.asc())
+        .limit(35)
     )
     servers = servers_res.scalars().all()
 
@@ -321,7 +344,7 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
     raw_payload = "\n".join([srv.uri for srv in servers])
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
-    encoded_title = base64.b64encode("NoVPN Free".encode()).decode()
+    encoded_title = base64.b64encode("NoVPN WhiteList".encode()).decode()
     headers = {
         "profile-title": f"base64:{encoded_title}",
         "Subscription-Userinfo": "upload=0; download=0; total=107374182400; expire=0",
@@ -388,10 +411,10 @@ async def start_handler(message: types.Message):
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
     msg = (
         f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
-        f"Ваша персональная подписка (VLESS Reality & Hysteria 2).\n\n"
-        f"🔗 <b>Ссылка на подписку</b> (нажмите для копирования):\n"
+        f"Подписка оптимизирована для мобильных сетей РФ (обход белых списков).\n\n"
+        f"🔗 <b>Ссылка на подписку</b>:\n"
         f"<code>{sub_link}</code>\n\n"
-        f"<i>💡 Для быстрого импорта нажмите кнопку ниже:</i>"
+        f"<i>💡 Нажмите кнопку ниже для импорта в Happ:</i>"
     )
 
     await message.answer(
@@ -437,7 +460,7 @@ async def main():
             )
             break
         except TelegramConflictError:
-            logger.warning("[Bot] Временный конфликт сессий при перезапуске Render. Ожидание 5 сек...")
+            logger.warning("[Bot] Временный конфликт сессий. Ожидание 5 сек...")
             await asyncio.sleep(5)
 
 
