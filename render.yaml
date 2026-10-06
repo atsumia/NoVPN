@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: vpn-bot-service
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      - key: BOT_TOKEN
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vpn-postgres
+          property: connectionString
+
+databases:
+  - name: vpn-postgres
+    plan: free
