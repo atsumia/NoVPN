@@ -10,6 +10,7 @@ import aiohttp
 import uvicorn
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramConflictError
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from fastapi import Depends, FastAPI, HTTPException, Response
@@ -60,14 +61,17 @@ async def init_db():
     logger.info("[DB] Инициализация структуры базы данных...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("[DB] Таблицы готовы к работе.")
+    logger.info("[DB] База данных готова.")
 
 
 SOURCES = [
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/protocols/vless.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/protocols/hysteria2.txt",
-    "https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/refs/heads/main/vless_configs.txt",
+    # Крупные проверенные источники VLESS Reality и Hysteria 2
+    "https://raw.githubusercontent.com/yebekhe/TVC/main/subscriptions/xray/reality",
+    "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub1.txt",
+    "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub2.txt",
+    "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
+    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/reality",
+    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/hysteria2",
 ]
 
 
@@ -78,20 +82,31 @@ def parse_proxy_uri(uri: str) -> dict | None:
     try:
         parsed = urllib.parse.urlparse(uri)
         scheme = parsed.scheme.lower()
-        if scheme not in ("vless", "hy2", "hysteria2", "trojan", "ss"):
+
+        # Разрешаем только протоколы, способные пробивать DPI и белые списки
+        if scheme not in ("vless", "hy2", "hysteria2"):
             return None
 
         host = parsed.hostname
         if not host:
             return None
 
-        port = parsed.port or (443 if scheme == "vless" else 80)
+        query_params = urllib.parse.parse_qs(parsed.query)
+
+        # Жесткая фильтрация VLESS: пропускаем ТОЛЬКО Reality с открытым ключом pbk
+        if scheme == "vless":
+            security = query_params.get("security", [""])[0].lower()
+            pbk = query_params.get("pbk", [""])[0]
+            if security != "reality" or not pbk:
+                return None  # Отбрасываем голый WebSocket, security=none и старый TLS
+
+        port = parsed.port or (443 if scheme in ("vless", "hy2", "hysteria2") else 80)
         return {"uri": uri, "scheme": scheme, "host": host, "port": port}
     except Exception:
         return None
 
 
-async def check_node_tcp(host: str, port: int, timeout: float = 1.8) -> int | None:
+async def check_node_tcp(host: str, port: int, timeout: float = 1.5) -> int | None:
     loop = asyncio.get_running_loop()
     start = loop.time()
     try:
@@ -109,7 +124,6 @@ async def fetch_feed(session: aiohttp.ClientSession, url: str) -> list[str]:
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
-                logger.warning(f"[Collector] Ошибка HTTP {resp.status} при загрузке {url}")
                 return []
             text = await resp.text()
             try:
@@ -118,31 +132,30 @@ async def fetch_feed(session: aiohttp.ClientSession, url: str) -> list[str]:
             except Exception:
                 return text.splitlines()
     except Exception as e:
-        logger.error(f"[Collector] Не удалось загрузить источник {url}: {e}")
+        logger.warning(f"[Collector] Ошибка загрузки источника {url}: {e}")
         return []
 
 
 async def update_proxies_task():
-    logger.info("[Collector] Начало скачивания серверов из источников...")
+    logger.info("[Collector] Поиск и фильтрация Reality и Hysteria2 серверов...")
     async with aiohttp.ClientSession() as http_session:
         raw_uris = []
         for url in SOURCES:
             lines = await fetch_feed(http_session, url)
             raw_uris.extend(lines)
 
-    logger.info(f"[Collector] Получено {len(raw_uris)} записей. Фильтрация...")
     unique_candidates = {}
     for line in raw_uris:
         meta = parse_proxy_uri(line)
         if meta and meta["host"] and meta["uri"] not in unique_candidates:
             unique_candidates[meta["uri"]] = meta
 
-    candidates_list = list(unique_candidates.values())[:100]
-    logger.info(f"[Collector] Проверка доступности {len(candidates_list)} серверов...")
+    candidates_list = list(unique_candidates.values())[:120]
+    logger.info(f"[Collector] Найдено {len(candidates_list)} Reality/Hy2 кандидатов. Проверка пинга...")
 
     valid_servers = []
-    for i in range(0, len(candidates_list), 15):
-        chunk = candidates_list[i : i + 15]
+    for i in range(0, len(candidates_list), 20):
+        chunk = candidates_list[i : i + 20]
         tasks = [check_node_tcp(item["host"], item["port"]) for item in chunk]
         results = await asyncio.gather(*tasks)
 
@@ -151,8 +164,7 @@ async def update_proxies_task():
                 valid_servers.append((meta, ping))
 
     if not valid_servers:
-        logger.warning("[Collector] Пинг-тест не ответил, используем резервные узлы.")
-        top_servers = [(item, 150) for item in candidates_list[:30]]
+        top_servers = [(item, 120) for item in candidates_list[:30]]
     else:
         valid_servers.sort(key=lambda x: x[1])
         top_servers = valid_servers[:35]
@@ -169,7 +181,7 @@ async def update_proxies_task():
             )
             session.add(srv)
         await session.commit()
-    logger.info(f"[Collector] Сохранено {len(top_servers)} активных серверов.")
+    logger.info(f"[Collector] Сохранено {len(top_servers)} проверенных Reality/Hy2 узлов.")
 
 
 app = FastAPI(title="NoVPN Gateway")
@@ -207,7 +219,7 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
     raw_payload = "\n".join([srv.uri for srv in servers])
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
-    encoded_title = base64.b64encode("NoVPN Free".encode()).decode()
+    encoded_title = base64.b64encode("NoVPN Reality".encode()).decode()
     headers = {
         "profile-title": f"base64:{encoded_title}",
         "Subscription-Userinfo": "upload=0; download=0; total=107374182400; expire=0",
@@ -224,8 +236,6 @@ async def redirect_to_client(client: str, token: str):
         target = f"happ://add/{sub_url}"
     elif client == "hiddify":
         target = f"hiddify://install-sub?url={sub_url}"
-    elif client == "v2rayng":
-        target = f"v2rayng://install-sub?url={sub_url}"
     else:
         target = sub_url
 
@@ -262,7 +272,7 @@ def get_menu(token: str):
 @router.message(CommandStart())
 async def start_handler(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"[Bot] Запрос /start от пользователя {user_id}")
+    logger.info(f"[Bot] Запрос /start от {user_id}")
 
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(User).where(User.telegram_id == user_id))
@@ -276,7 +286,7 @@ async def start_handler(message: types.Message):
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
     msg = (
         f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
-        f"Ваша персональная подписка с серверами (VLESS Reality, Hysteria 2, Trojan).\n\n"
+        f"Ваша персональная подписка (VLESS Reality & Hysteria 2).\n\n"
         f"🔗 <b>Ссылка на подписку</b> (нажмите для копирования):\n"
         f"<code>{sub_link}</code>\n\n"
         f"<i>💡 Для быстрого импорта нажмите кнопку ниже:</i>"
@@ -301,7 +311,7 @@ async def cron_loop():
 
 async def main():
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не задан в переменных окружения!")
+        logger.error("BOT_TOKEN не задан!")
         raise ValueError("BOT_TOKEN is not set")
 
     await init_db()
@@ -312,15 +322,21 @@ async def main():
     dp.include_router(router)
 
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("[Bot] Webhook сброшен, запуск polling и uvicorn...")
+    logger.info("[Bot] Webhook сброшен, запуск...")
 
     server_config = uvicorn.Config(app=app, host="0.0.0.0", port=PORT, log_level="warning")
     server = uvicorn.Server(server_config)
 
-    await asyncio.gather(
-        dp.start_polling(bot),
-        server.serve(),
-    )
+    while True:
+        try:
+            await asyncio.gather(
+                dp.start_polling(bot),
+                server.serve(),
+            )
+            break
+        except TelegramConflictError:
+            logger.warning("[Bot] Временный конфликт сессий при перезапуске Render. Ожидание 5 сек...")
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
