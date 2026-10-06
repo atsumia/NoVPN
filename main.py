@@ -6,6 +6,7 @@ import os
 import re
 import urllib.parse
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import aiohttp
@@ -17,7 +18,7 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, String, delete, select, text
+from sqlalchemy import BigInteger, Column, DateTime, Integer, String, delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -26,7 +27,7 @@ logger = logging.getLogger("NoVPN")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-# Поддержка вашего домена на Railway с автоподстановкой https://
+# Домен на Railway
 RAW_APP_URL = os.getenv("APP_URL", "https://novpn-production.up.railway.app").strip().rstrip("/")
 if not RAW_APP_URL.startswith("http://") and not RAW_APP_URL.startswith("https://"):
     APP_URL = f"https://{RAW_APP_URL}"
@@ -70,10 +71,15 @@ async def init_db():
     logger.info("[DB] Инициализация базы данных...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("[DB] База данных готова к работе.")
+        if "postgresql" in DATABASE_URL:
+            try:
+                await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN IF NOT EXISTS tier INTEGER DEFAULT 3;"))
+            except Exception:
+                pass
+    logger.info("[DB] База данных готова.")
 
 
-# Специализированные российские репозитории обхода белых списков
+# Базы обхода белых списков РФ
 RU_WHITELIST_SOURCES = [
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt",
@@ -95,7 +101,6 @@ TELEGRAM_CHANNELS = [
     "vpn_fail_ru",
 ]
 
-# Разрешенные в РФ домены для SNI-маскировки
 RU_WHITE_DOMAINS = (
     "yandex.ru", "ya.ru", "vk.com", "vk.ru", "mail.ru", "dzen.ru",
     "gosuslugi.ru", "ozon.ru", "wildberries.ru", "wb.ru", "tinkoff.ru",
@@ -104,7 +109,6 @@ RU_WHITE_DOMAINS = (
     "t2.ru", "tele2.ru", "avito.ru",
 )
 
-# Подсети CDN, заблокированные ТСПУ наглухо
 BLOCKED_IP_PREFIXES = (
     "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.",
     "104.22.", "104.23.", "104.24.", "104.25.", "104.26.", "104.27.",
@@ -120,8 +124,6 @@ def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
     try:
         parsed = urllib.parse.urlparse(uri)
         scheme = parsed.scheme.lower()
-
-        # Только Reality и Hysteria2
         if scheme not in ("vless", "hy2", "hysteria2"):
             return None
 
@@ -132,7 +134,6 @@ def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
         query_params = urllib.parse.parse_qs(parsed.query)
         net_type = query_params.get("type", ["tcp"])[0].lower()
         sni = query_params.get("sni", [""])[0].lower()
-
         is_ru_sni = any(d in sni for d in RU_WHITE_DOMAINS) or sni.endswith(".ru")
 
         if scheme == "vless":
@@ -141,7 +142,6 @@ def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
             if security != "reality" or not pbk:
                 return None
 
-        # Определение приоритета (Tier 1 — высший)
         if source_type == "whitelist" or is_ru_sni:
             tier = 1
         elif source_type == "ru_fallback":
@@ -189,11 +189,10 @@ async def fetch_telegram_channel(session: aiohttp.ClientSession, channel: str) -
 
 
 async def update_proxies_task():
-    logger.info("[Collector] Сбор свежих списков по HTTP...")
+    logger.info("[Collector] Сбор серверов...")
     candidates = {}
 
     async with aiohttp.ClientSession() as session:
-        # 1. Сбор белых списков
         wl_tasks = [fetch_feed(session, url) for url in RU_WHITELIST_SOURCES]
         for res in await asyncio.gather(*wl_tasks, return_exceptions=True):
             if isinstance(res, list):
@@ -202,7 +201,6 @@ async def update_proxies_task():
                     if meta and meta["uri"] not in candidates:
                         candidates[meta["uri"]] = meta
 
-        # 2. Сбор резервных списков
         fb_tasks = [fetch_feed(session, url) for url in RU_FALLBACK_SOURCES]
         for res in await asyncio.gather(*fb_tasks, return_exceptions=True):
             if isinstance(res, list):
@@ -211,7 +209,6 @@ async def update_proxies_task():
                     if meta and meta["uri"] not in candidates:
                         candidates[meta["uri"]] = meta
 
-        # 3. Сбор из Telegram-каналов
         tg_tasks = [fetch_telegram_channel(session, ch) for ch in TELEGRAM_CHANNELS]
         for res in await asyncio.gather(*tg_tasks, return_exceptions=True):
             if isinstance(res, list):
@@ -222,10 +219,9 @@ async def update_proxies_task():
 
     candidates_list = list(candidates.values())
     if not candidates_list:
-        logger.warning("[Collector] Новые узлы не получены, оставляем текущую базу.")
+        logger.warning("[Collector] Новые узлы не получены, оставляем базу.")
         return
 
-    # Сортировка: Tier 1 (белые списки RU) -> TCP -> Tier 2 -> Tier 3
     candidates_list.sort(key=lambda x: (x["tier"], 0 if x["net_type"] == "tcp" else 1))
     top_servers = candidates_list[:45]
 
@@ -236,10 +232,83 @@ async def update_proxies_task():
             db_session.add(srv)
         await db_session.commit()
 
-    logger.info(f"[Collector] Успешно сохранено {len(top_servers)} чистых Reality/Hy2 серверов.")
+    logger.info(f"[Collector] Успешно сохранено {len(top_servers)} серверов.")
 
 
-app = FastAPI(title="NoVPN Gateway")
+router = Router()
+
+
+@router.message(CommandStart())
+async def start_handler(message: types.Message):
+    user_id = message.from_user.id
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = res.scalar_one_or_none()
+        if not user:
+            user = User(telegram_id=user_id)
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+
+    sub_link = f"{APP_URL}/sub/{user.sub_token}"
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (1-клик)", url=f"{APP_URL}/open/happ?token={user.sub_token}"))
+    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Hiddify", url=f"{APP_URL}/open/hiddify?token={user.sub_token}"))
+
+    msg = (
+        f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
+        f"Подписка оптимизирована для мобильных сетей РФ (обход белых списков).\n\n"
+        f"🔗 <b>Ссылка на подписку</b>:\n"
+        f"<code>{sub_link}</code>\n\n"
+        f"💡 <b>Нажмите кнопку ниже для импорта:</b>"
+    )
+    await message.answer(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+
+
+async def cron_loop():
+    while True:
+        try:
+            await update_proxies_task()
+        except Exception as e:
+            logger.error(f"[Collector Error] {e}")
+        await asyncio.sleep(1800)
+
+
+async def bot_polling_loop():
+    if not BOT_TOKEN:
+        logger.error("[Bot] BOT_TOKEN не задан в переменных окружения!")
+        return
+
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("[Bot] Telegram-бот запущен и ожидает сообщений...")
+
+    while True:
+        try:
+            await dp.start_polling(bot)
+            break
+        except TelegramConflictError:
+            logger.warning("[Bot] Конфликт сессий, повтор через 5 секунд...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"[Bot Error] {e}")
+            await asyncio.sleep(5)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Запуск фоновых процессов при старте сервера FastAPI
+    await init_db()
+    c_task = asyncio.create_task(cron_loop())
+    b_task = asyncio.create_task(bot_polling_loop())
+    yield
+    c_task.cancel()
+    b_task.cancel()
+
+
+app = FastAPI(title="NoVPN Gateway", lifespan=lifespan)
 
 
 async def get_db():
@@ -249,7 +318,7 @@ async def get_db():
 
 @app.get("/")
 async def root():
-    return {"status": "online", "service": "NoVPN"}
+    return {"status": "online", "service": "NoVPN", "app_url": APP_URL}
 
 
 @app.get("/sub/{token}")
@@ -260,7 +329,7 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Token not found")
 
     servers_res = await db.execute(
-        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(40)
+        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(45)
     )
     servers = servers_res.scalars().all()
 
@@ -302,65 +371,7 @@ async def redirect_to_client(client: str, token: str):
     return HTMLResponse(content=html_content)
 
 
-router = Router()
-
-
-@router.message(CommandStart())
-async def start_handler(message: types.Message):
-    user_id = message.from_user.id
-    async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User).where(User.telegram_id == user_id))
-        user = res.scalar_one_or_none()
-        if not user:
-            user = User(telegram_id=user_id)
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-
-    sub_link = f"{APP_URL}/sub/{user.sub_token}"
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (1-клик)", url=f"{APP_URL}/open/happ?token={user.sub_token}"))
-
-    msg = (
-        f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
-        f"Подписка собрана под мобильные сети РФ (белые списки Reality/Hy2).\n\n"
-        f"🔗 <b>Ссылка на подписку</b>:\n"
-        f"<code>{sub_link}</code>"
-    )
-    await message.answer(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
-
-
-async def cron_loop():
-    while True:
-        try:
-            await update_proxies_task()
-        except Exception as e:
-            logger.error(f"[Collector Error] {e}")
-        await asyncio.sleep(1800)
-
-
-async def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN is not set")
-
-    await init_db()
-    asyncio.create_task(cron_loop())
-
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
-    dp.include_router(router)
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    server_config = uvicorn.Config(app=app, host="0.0.0.0", port=PORT, log_level="warning")
-    server = uvicorn.Server(server_config)
-
-    while True:
-        try:
-            await asyncio.gather(dp.start_polling(bot), server.serve())
-            break
-        except TelegramConflictError:
-            await asyncio.sleep(5)
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    server_config = uvicorn.Config(app=app, host="0.0.0.0", port=PORT, log_level="info")
+    server = uvicorn.Server(server_config)
+    asyncio.run(server.serve())
