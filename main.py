@@ -17,7 +17,7 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, String, delete, select
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, String, delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -64,10 +64,13 @@ async def init_db():
     logger.info("[DB] Инициализация структуры базы данных...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN IF NOT EXISTS tier INTEGER DEFAULT 3;"))
+        except Exception as e:
+            logger.warning(f"[DB Migration] {e}")
     logger.info("[DB] База данных готова.")
 
 
-# Базы, созданные специально под обход белых списков и ТСПУ в РФ
 RU_WHITELIST_SOURCES = [
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt",
@@ -153,11 +156,9 @@ def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
             security = query_params.get("security", [""])[0].lower()
             pbk = query_params.get("pbk", [""])[0]
 
-            # Полный запрет обычного TLS. Допускается только Reality с ключом pbk
             if security != "reality" or not pbk:
                 return None
 
-        # Определение категории приоритета
         if source_type == "whitelist" or is_ru_sni:
             tier = 1
         elif source_type == "ru_fallback":
@@ -265,7 +266,6 @@ async def update_proxies_task():
         logger.warning("[Collector] Новые узлы не получены, сохраняем существующую базу.")
         return
 
-    # Сортировка кандидатов: Tier 1 (Белые списки / RU SNI) проверяются первыми
     candidates_list.sort(key=lambda x: (x["tier"], 0 if x["net_type"] == "tcp" else 1))
 
     check_pool = candidates_list[:180]
@@ -281,7 +281,6 @@ async def update_proxies_task():
                 valid_servers.append((meta, ping))
 
     if valid_servers:
-        # Приоритет: сначала Tier 1 (белые списки), затем TCP перед gRPC, затем минимальный пинг
         valid_servers.sort(
             key=lambda x: (
                 x[0]["tier"],
