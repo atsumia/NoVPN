@@ -27,7 +27,6 @@ logger = logging.getLogger("NoVPN")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-# Домен на Railway
 RAW_APP_URL = os.getenv("APP_URL", "https://novpn-production.up.railway.app").strip().rstrip("/")
 if not RAW_APP_URL.startswith("http://") and not RAW_APP_URL.startswith("https://"):
     APP_URL = f"https://{RAW_APP_URL}"
@@ -36,7 +35,6 @@ else:
 
 PORT = int(os.getenv("PORT", 8000))
 
-# Поддержка SQLite по умолчанию (для Railway без внешних баз) или PostgreSQL
 RAW_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./vpn_pool.db")
 if RAW_URL.startswith("postgres://"):
     DATABASE_URL = RAW_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -79,26 +77,24 @@ async def init_db():
     logger.info("[DB] База данных готова.")
 
 
-# Базы обхода белых списков РФ
 RU_WHITELIST_SOURCES = [
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-all.txt",
-]
-
-RU_FALLBACK_SOURCES = [
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt",
+    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/reality",
 ]
 
 TELEGRAM_CHANNELS = [
     "igareq",
+    "whitelist_vpn",
+    "ru_vless",
     "vpn_free_russia",
     "VLESS_REALITY",
     "vless_configs",
     "reality_free",
     "vpn_fail_ru",
+    "proxy_gate_ru",
 ]
 
 RU_WHITE_DOMAINS = (
@@ -134,7 +130,8 @@ def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
         query_params = urllib.parse.parse_qs(parsed.query)
         net_type = query_params.get("type", ["tcp"])[0].lower()
         sni = query_params.get("sni", [""])[0].lower()
-        is_ru_sni = any(d in sni for d in RU_WHITE_DOMAINS) or sni.endswith(".ru")
+
+        is_ru_sni = any(sni.endswith(d) or sni == d for d in RU_WHITE_DOMAINS) or sni.endswith(".ru")
 
         if scheme == "vless":
             security = query_params.get("security", [""])[0].lower()
@@ -142,9 +139,12 @@ def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
             if security != "reality" or not pbk:
                 return None
 
-        if source_type == "whitelist" or is_ru_sni:
+        tag_name = urllib.parse.unquote(parsed.fragment).lower()
+        has_ru_tag = any(k in tag_name for k in ("ru", "white", "бс", "бел", "relay", "yandex", "россия"))
+
+        if is_ru_sni:
             tier = 1
-        elif source_type == "ru_fallback":
+        elif source_type == "whitelist" or has_ru_tag:
             tier = 2
         else:
             tier = 3
@@ -189,7 +189,7 @@ async def fetch_telegram_channel(session: aiohttp.ClientSession, channel: str) -
 
 
 async def update_proxies_task():
-    logger.info("[Collector] Сбор серверов...")
+    logger.info("[Collector] Поиск RU Relay и серверов под белые списки...")
     candidates = {}
 
     async with aiohttp.ClientSession() as session:
@@ -198,14 +198,6 @@ async def update_proxies_task():
             if isinstance(res, list):
                 for line in res:
                     meta = parse_proxy_uri(line, source_type="whitelist")
-                    if meta and meta["uri"] not in candidates:
-                        candidates[meta["uri"]] = meta
-
-        fb_tasks = [fetch_feed(session, url) for url in RU_FALLBACK_SOURCES]
-        for res in await asyncio.gather(*fb_tasks, return_exceptions=True):
-            if isinstance(res, list):
-                for line in res:
-                    meta = parse_proxy_uri(line, source_type="ru_fallback")
                     if meta and meta["uri"] not in candidates:
                         candidates[meta["uri"]] = meta
 
@@ -219,11 +211,11 @@ async def update_proxies_task():
 
     candidates_list = list(candidates.values())
     if not candidates_list:
-        logger.warning("[Collector] Новые узлы не получены, оставляем базу.")
+        logger.warning("[Collector] Новые узлы не получены, пул сохранен.")
         return
 
     candidates_list.sort(key=lambda x: (x["tier"], 0 if x["net_type"] == "tcp" else 1))
-    top_servers = candidates_list[:45]
+    top_servers = candidates_list[:40]
 
     async with AsyncSessionLocal() as db_session:
         await db_session.execute(delete(ProxyServer))
@@ -257,10 +249,10 @@ async def start_handler(message: types.Message):
 
     msg = (
         f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
-        f"Подписка оптимизирована для мобильных сетей РФ (обход белых списков).\n\n"
+        f"Пул серверов сфокусирован на российских мостах (RU Relay) и VLESS Reality с маскировкой под разрешенные сервисы.\n\n"
         f"🔗 <b>Ссылка на подписку</b>:\n"
         f"<code>{sub_link}</code>\n\n"
-        f"💡 <b>Нажмите кнопку ниже для импорта:</b>"
+        f"💡 <b>Используйте кнопку ниже для импорта:</b>"
     )
     await message.answer(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
 
@@ -299,7 +291,6 @@ async def bot_polling_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Запуск фоновых процессов при старте сервера FastAPI
     await init_db()
     c_task = asyncio.create_task(cron_loop())
     b_task = asyncio.create_task(bot_polling_loop())
@@ -329,7 +320,7 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Token not found")
 
     servers_res = await db.execute(
-        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(45)
+        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(40)
     )
     servers = servers_res.scalars().all()
 
@@ -340,7 +331,7 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
     raw_payload = "\n".join([srv.uri for srv in servers])
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
-    encoded_title = base64.b64encode("NoVPN WhiteList".encode()).decode()
+    encoded_title = base64.b64encode("NoVPN RU-Relay".encode()).decode()
     headers = {
         "profile-title": f"base64:{encoded_title}",
         "Subscription-Userinfo": "upload=0; download=0; total=107374182400; expire=0",
@@ -364,7 +355,7 @@ async def redirect_to_client(client: str, token: str):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
   </head>
   <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #0f172a; color: #f8fafc;">
-    <h2>Открытие приложения Happ...</h2>
+    <h2>Открытие приложения {client.capitalize()}...</h2>
     <p><a href="{target}" style="color: #38bdf8; font-size: 16px; font-weight: bold;">👉 Нажмите сюда для импорта</a></p>
   </body>
 </html>"""
