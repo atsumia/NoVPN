@@ -21,9 +21,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("NoVPN")
 
-# ==========================================
-# 1. КОНФИГУРАЦИЯ И БАЗА ДАННЫХ
-# ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 APP_URL = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
 PORT = int(os.getenv("PORT", 8000))
@@ -66,10 +63,6 @@ async def init_db():
     logger.info("[DB] Таблицы готовы к работе.")
 
 
-# ==========================================
-# 2. АКТУАЛЬНЫЕ ИСТОЧНИКИ И ПАРСИНГ НОД
-# ==========================================
-# Используем живые, обновляемые каждые 15 минут проверенные репозитории (0xRadikal и EbraSha)
 SOURCES = [
     "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt",
     "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/protocols/vless.txt",
@@ -148,7 +141,6 @@ async def update_proxies_task():
     logger.info(f"[Collector] Проверка доступности {len(candidates_list)} серверов...")
 
     valid_servers = []
-    # Проверяем параллельно пачками по 15 штук
     for i in range(0, len(candidates_list), 15):
         chunk = candidates_list[i : i + 15]
         tasks = [check_node_tcp(item["host"], item["port"]) for item in chunk]
@@ -158,10 +150,8 @@ async def update_proxies_task():
             if ping is not None:
                 valid_servers.append((meta, ping))
 
-    # Если пинг с хостинга Render дал сбой (бывает из-за ограничений дата-центра),
-    # берём первые 30 заранее верифицированных источников напрямую, чтобы подписка не пустовала
     if not valid_servers:
-        logger.warning("[Collector] Пинг-тест не ответил, используем верифицированные узлы напрямую.")
+        logger.warning("[Collector] Пинг-тест не ответил, используем резервные узлы.")
         top_servers = [(item, 150) for item in candidates_list[:30]]
     else:
         valid_servers.sort(key=lambda x: x[1])
@@ -179,12 +169,9 @@ async def update_proxies_task():
             )
             session.add(srv)
         await session.commit()
-    logger.info(f"[Collector] Успешно сохранено {len(top_servers)} активных серверов в БД.")
+    logger.info(f"[Collector] Сохранено {len(top_servers)} активных серверов.")
 
 
-# ==========================================
-# 3. FASTAPI И РЕДИРЕКТЫ ДЛЯ HAPP / HIDDIFY
-# ==========================================
 app = FastAPI(title="NoVPN Gateway")
 
 
@@ -214,14 +201,12 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
     servers = servers_res.scalars().all()
 
     if not servers:
-        # Если база еще наполняется, запускаем срочный сбор
         asyncio.create_task(update_proxies_task())
         return Response(content="", media_type="text/plain")
 
     raw_payload = "\n".join([srv.uri for srv in servers])
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
-    # Передаем понятное название подписки и параметры для Happ / Hiddify
     encoded_title = base64.b64encode("NoVPN Free".encode()).decode()
     headers = {
         "profile-title": f"base64:{encoded_title}",
@@ -244,28 +229,23 @@ async def redirect_to_client(client: str, token: str):
     else:
         target = sub_url
 
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Подключение NoVPN</title>
-        <meta http-equiv="refresh" content="0; url={target}">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #0f172a; color: #f8fafc;">
-        <h2>Открытие в приложении...</h2>
-        <p style="color: #94a3b8; font-size: 14px;">Если приложение не открылось автоматически:</p>
-        <p><a href="{target}" style="color: #38bdf8; text-decoration: none; font-weight: bold; font-size: 16px;">👉 Нажмите сюда, чтобы открыть</a></p>
-      </body>
-    </html>
-    """
+    html_content = f"""<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Подключение NoVPN</title>
+    <meta http-equiv="refresh" content="0; url={target}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  </head>
+  <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #0f172a; color: #f8fafc;">
+    <h2>Открытие в приложении...</h2>
+    <p style="color: #94a3b8; font-size: 14px;">Если приложение не открылось автоматически:</p>
+    <p><a href="{target}" style="color: #38bdf8; text-decoration: none; font-weight: bold; font-size: 16px;">👉 Нажмите сюда, чтобы открыть</a></p>
+  </body>
+</html>"""
     return HTMLResponse(content=html_content)
 
 
-# ==========================================
-# 4. TELEGRAM БОТ
-# ==========================================
 router = Router()
 
 
@@ -296,8 +276,8 @@ async def start_handler(message: types.Message):
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
     msg = (
         f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
-        f"Ваша персональная авто-обновляемая подписка с серверами (VLESS Reality, Hysteria 2, Trojan).\n\n"
-        f"🔗 <b>Ссылка на вашу подписку</b> (нажмите, чтобы скопировать):\n"
+        f"Ваша персональная подписка с серверами (VLESS Reality, Hysteria 2, Trojan).\n\n"
+        f"🔗 <b>Ссылка на подписку</b> (нажмите для копирования):\n"
         f"<code>{sub_link}</code>\n\n"
         f"<i>💡 Для быстрого импорта нажмите кнопку ниже:</i>"
     )
@@ -310,11 +290,7 @@ async def start_handler(message: types.Message):
     )
 
 
-# ==========================================
-# 5. ТОЧКА ВХОДА
-# ==========================================
 async def cron_loop():
-    # Первый сбор запускаем сразу при старте сервиса
     while True:
         try:
             await update_proxies_task()
@@ -349,36 +325,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
-
----
-
-### Ответы на ваши вопросы и разбор причин
-
-#### 1. «Зачем кнопка обновления пула в боте каждые 30 мин?»
-Вы абсолютно правы — эта кнопка в боте **была лишней и бесполезной**. Она просто выводила всплывающий алерт и ни на что не влияла. Клиенты вроде **Happ** и **Hiddify** работают по стандарту `profile-update-interval` и сами в фоне опрашивают ссылку подписки раз в заданное время либо при свайпе вниз.
-* Бесполезная кнопка убрана.
-* Вместо неё добавлена удобная кнопка **«🚀 Добавить в Happ (1-клик)»**, которая открывает приложение сразу с вашей ссылкой.
-
----
-
-#### 2. Почему в Happ ничего не появилось (пустой список)?
-На третьем скриншоте видно, что Happ добавил подписку, но в ней **0 серверов**. Причины было две:
-1. **Старые ссылки-источники выдавали 404:** в исходном коде репозитории на GitHub переместили или удалили файлы (`Splitted/Vless.txt`), поэтому парсер получал пустые данные и в базу ничего не попадало.
-2. **Пустой ответ при первом запросе:** когда вы отправили ссылку в Happ в 1:29 PM, фоновый сборщик еще не успел завершить проверку пингов. Из-за этого база вернула пустоту `""`, и Happ сохранил пустую подписку.
-
----
-
-### Что сделано в обновлении:
-1. **Подключены живые источники узлов:** добавлены официальные свежие списки `0xRadikal` (top-100 и протоколы vless/hysteria2, которые авто-тестируются каждые 15 минут) и `EbraSha`.
-2. **Гарантированное наполнение:** если с дата-центра Render не проходит прямой TCP-пинг по таймауту, скрипт автоматически отдает 30 проверенных рабочих узлов, чтобы подписка **никогда не была пустой**.
-3. **Красивое название:** добавлен заголовок `profile-title: NoVPN Free`, чтобы в Happ подписка отображалась с нормальным именем, а не длинным адресом сервера.
-4. **Кнопка для Happ:** добавлен редирект на схему `happ://add/...`.
-
----
-
-### Что сделать сейчас:
-1. Зайдите на GitHub в файл **`main.py`**, нажмите **Edit**, вставьте обновленный код и нажмите **Commit changes**.
-2. Подождите 1 минуту, пока Render применит обновление.
-3. Откройте **Happ**, нажмите на круговую стрелку обновления (как на скриншоте 3) или удалите старую подписку и нажмите в боте кнопку **«🚀 Добавить в Happ»**.
-4. В приложении сразу появится список серверов VLESS и Hysteria2 с пингами.
