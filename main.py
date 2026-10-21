@@ -11,7 +11,7 @@ from datetime import datetime
 
 import aiohttp
 import uvicorn
-from aiogram import Bot, Dispatcher, Router, types
+from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramConflictError
 from aiogram.filters import CommandStart
@@ -46,6 +46,18 @@ else:
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
+
+# Собственный кластер Амстердам (VLESS Reality + XTLS-Vision)
+DEDICATED_NODES = [
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20Amsterdam%20(Primary)",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20Amsterdam%20(Alternative)",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=safari&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20Amsterdam%20(iOS%20%2F%20Safari)",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=www.gazeta-business.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20Amsterdam%20(Web)"
+]
+
+# MTProto Proxy для быстрого подключения Telegram
+MTPROTO_LINK = "tg://proxy?server=186.246.47.218&port=8443&secret=ee79b4de5a9b70b58e74e304859a1f592a79616e6465782e7275"
+MTPROTO_HTTP_LINK = "https://t.me/proxy?server=186.246.47.218&port=8443&secret=ee79b4de5a9b70b58e74e304859a1f592a79616e6465782e7275"
 
 
 class User(Base):
@@ -215,7 +227,7 @@ async def update_proxies_task():
         return
 
     candidates_list.sort(key=lambda x: (x["tier"], 0 if x["net_type"] == "tcp" else 1))
-    top_servers = candidates_list[:40]
+    top_servers = candidates_list[:30]
 
     async with AsyncSessionLocal() as db_session:
         await db_session.execute(delete(ProxyServer))
@@ -228,6 +240,28 @@ async def update_proxies_task():
 
 
 router = Router()
+
+
+def get_main_keyboard(sub_token: str) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (iOS / Android)", url=f"{APP_URL}/open/happ?token={sub_token}"))
+    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Hiddify (PC / Android)", url=f"{APP_URL}/open/hiddify?token={sub_token}"))
+    kb.row(types.InlineKeyboardButton(text="✈️ Подключить MTProxy (Только Telegram)", url=MTPROTO_HTTP_LINK))
+    kb.row(types.InlineKeyboardButton(text="ℹ️ Инструкция по настройке", callback_data="help_info"))
+    return kb
+
+
+def get_welcome_text(sub_link: str) -> str:
+    return (
+        "🌐 <b>Добро пожаловать в NoVPN</b>\n\n"
+        "Сервис настроен на обход блокировок ТСПУ и DPI через VLESS Reality и Fake-TLS.\n\n"
+        "<b>Доступные режимы:</b>\n"
+        "• <b>VPN (Весь интернет):</b> Амстердамский кластер (1 Гбит/с, BBR) с маскировкой под российские корпоративные ресурсы.\n"
+        "• <b>MTProto Proxy:</b> прямое подключение Telegram в один клик без сторонних программ.\n\n"
+        "🔗 <b>Ваша ссылка на подписку:</b>\n"
+        f"<code>{sub_link}</code>\n\n"
+        "<i>Нажмите кнопку ниже для быстрого импорта:</i>"
+    )
 
 
 @router.message(CommandStart())
@@ -243,18 +277,45 @@ async def start_handler(message: types.Message):
             await session.refresh(user)
 
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (1-клик)", url=f"{APP_URL}/open/happ?token={user.sub_token}"))
-    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Hiddify", url=f"{APP_URL}/open/hiddify?token={user.sub_token}"))
-
-    msg = (
-        f"👋 <b>Добро пожаловать в NoVPN!</b>\n\n"
-        f"Пул серверов сфокусирован на российских мостах (RU Relay) и VLESS Reality с маскировкой под разрешенные сервисы.\n\n"
-        f"🔗 <b>Ссылка на подписку</b>:\n"
-        f"<code>{sub_link}</code>\n\n"
-        f"💡 <b>Используйте кнопку ниже для импорта:</b>"
-    )
+    kb = get_main_keyboard(user.sub_token)
+    msg = get_welcome_text(sub_link)
     await message.answer(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "help_info")
+async def help_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = res.scalar_one_or_none()
+        token = user.sub_token if user else ""
+
+    text_info = (
+        "📖 <b>Инструкция по настройке NoVPN:</b>\n\n"
+        "<b>1. Полный интернет (VPN):</b>\n"
+        "• <b>iOS (iPhone):</b> установите <b>Happ</b> или <b>Streisand</b> из App Store, нажмите кнопку «Добавить в Happ».\n"
+        "• <b>Android:</b> установите <b>Happ</b>, <b>v2rayNG</b> или <b>Hiddify</b>.\n"
+        "• <b>Windows / Mac:</b> используйте <b>Hiddify</b> или <b>v2rayN</b>.\n\n"
+        "💡 <b>Рекомендация:</b> включите в приложении режим <i>Bypass Russian Federation</i> (раздельное туннелирование). "
+        "В этом случае банки, Госуслуги и маркетплейсы будут работать напрямую на полной скорости, "
+        "а YouTube, Instagram и заблокированные ресурсы — через наш сервер в Амстердаме.\n\n"
+        "<b>2. Только Telegram:</b>\n"
+        "Нажмите кнопку «Подключить MTProxy» — мессенджер подключится через зашифрованный Fake-TLS мост без установки приложений."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔙 Назад к ссылке", callback_data=f"back_main:{token}"))
+    await callback.message.edit_text(text=text_info, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("back_main:"))
+async def back_main_callback(callback: types.CallbackQuery):
+    token = callback.data.split(":", 1)[1]
+    sub_link = f"{APP_URL}/sub/{token}"
+    kb = get_main_keyboard(token)
+    msg = get_welcome_text(sub_link)
+    await callback.message.edit_text(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    await callback.answer()
 
 
 async def cron_loop():
@@ -320,22 +381,26 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Token not found")
 
     servers_res = await db.execute(
-        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(40)
+        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(30)
     )
-    servers = servers_res.scalars().all()
+    db_servers = servers_res.scalars().all()
 
-    if not servers:
-        asyncio.create_task(update_proxies_task())
-        return Response(content="", media_type="text/plain")
+    # Формируем итоговый список: сначала наши 4 выделенных амстердамских узла, затем резервный пул
+    all_uris = list(DEDICATED_NODES)
+    seen = set(all_uris)
+    for srv in db_servers:
+        if srv.uri not in seen:
+            all_uris.append(srv.uri)
+            seen.add(srv.uri)
 
-    raw_payload = "\n".join([srv.uri for srv in servers])
+    raw_payload = "\n".join(all_uris)
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
-    encoded_title = base64.b64encode("NoVPN RU-Relay".encode()).decode()
+    encoded_title = base64.b64encode("NoVPN".encode()).decode()
     headers = {
         "profile-title": f"base64:{encoded_title}",
-        "Subscription-Userinfo": "upload=0; download=0; total=107374182400; expire=0",
-        "profile-update-interval": "1",
+        "Subscription-Userinfo": "upload=1073741824; download=5368709120; total=107374182400; expire=1893456000",
+        "profile-update-interval": "12",
         "content-disposition": "attachment; filename=NoVPN.txt",
     }
     return Response(content=encoded, media_type="text/plain; charset=utf-8", headers=headers)
@@ -344,7 +409,14 @@ async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
 @app.get("/open/{client}")
 async def redirect_to_client(client: str, token: str):
     sub_url = f"{APP_URL}/sub/{token}"
-    target = f"happ://add/{sub_url}" if client == "happ" else f"hiddify://install-sub?url={sub_url}"
+    if client == "happ":
+        target = f"happ://add/{sub_url}"
+    elif client == "hiddify":
+        target = f"hiddify://install-sub?url={sub_url}"
+    elif client == "tgproxy":
+        target = MTPROTO_LINK
+    else:
+        target = sub_url
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -355,8 +427,8 @@ async def redirect_to_client(client: str, token: str):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
   </head>
   <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #0f172a; color: #f8fafc;">
-    <h2>Открытие приложения {client.capitalize()}...</h2>
-    <p><a href="{target}" style="color: #38bdf8; font-size: 16px; font-weight: bold;">👉 Нажмите сюда для импорта</a></p>
+    <h2>Подключение NoVPN...</h2>
+    <p><a href="{target}" style="color: #38bdf8; font-size: 16px; font-weight: bold;">👉 Нажмите сюда, если приложение не открылось автоматически</a></p>
   </body>
 </html>"""
     return HTMLResponse(content=html_content)
