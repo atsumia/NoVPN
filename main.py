@@ -63,8 +63,8 @@ DEDICATED_NODES = [
 ]
 
 # MTProto Proxy для быстрого подключения Telegram
-MTPROTO_LINK = "tg://proxy?server=tg.asdqwemary.de5.net&port=8443&secret=ee79b4de5a9b70b58e74e304859a1f592a79616e6465782e7275"
-MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&secret=ee79b4de5a9b70b58e74e304859a1f592a79616e6465782e7275"
+MTPROTO_LINK = "tg://proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
+MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
 
 
 class User(Base):
