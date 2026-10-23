@@ -16,6 +16,7 @@ from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramConflictError
 from aiogram.filters import Command, CommandStart
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -691,6 +692,145 @@ async def cmd_ban(message: types.Message):
             await message.answer("Пользователь не найден.")
 
 
+@router.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Доступ только для администратора.")
+        return
+
+    await sync_upstream_telemetry()
+    async with AsyncSessionLocal() as session:
+        total_res = await session.execute(select(func.count(User.id)))
+        total_count = total_res.scalar_one()
+
+        active_res = await session.execute(select(func.count(User.id)).where(User.is_active == 1))
+        active_count = active_res.scalar_one()
+
+        pending_res = await session.execute(select(func.count(User.id)).where(User.is_active == 0))
+        pending_count = pending_res.scalar_one()
+
+        sync_res = await session.execute(select(func.sum(User.sub_sync_count)))
+        total_syncs = sync_res.scalar_one() or 0
+
+    stats_text = (
+        "👑 <b>Панель администратора NoVPN</b>\n\n"
+        "📊 <b>Статистика пользователей:</b>\n"
+        f"• Всего зарегистрировано: <b>{total_count}</b>\n"
+        f"• Активных подписок: <b>{active_count}</b>\n"
+        f"• Ожидают подтверждения: <b>{pending_count}</b>\n"
+        f"• Всего синхронизаций конфигураций: <b>{total_syncs}</b>\n\n"
+        f"🌐 <b>Узлов в сети:</b> {len(current_fleet_nodes)}\n\n"
+        "<i>Команды быстрого управления:</i>\n"
+        "• <code>/users</code> — список пользователей с устройствами\n"
+        "• <code>/approve &lt;tg_id&gt;</code> — выдать доступ\n"
+        "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
+    await message.answer(text=stats_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+
+@router.message(Command("users"))
+async def cmd_users(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    await sync_upstream_telemetry()
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
+        users = res.scalars().all()
+
+    lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
+    for u in users:
+        status_ico = "🟢" if u.is_active == 1 else "⏳"
+        name = html.escape(u.first_name or u.username or "Пользователь")
+        uname = f"(@{u.username})" if u.username else ""
+        syncs = u.sub_sync_count or 0
+
+        v_data = vps_telemetry_cache.get(u.sub_token, {})
+        devices = v_data.get("devices", {})
+        dev_badges = []
+        if devices:
+            for d_info in devices.values():
+                d_title = d_info.get("title", "")
+                if "iPhone" in d_title or "iOS" in d_title:
+                    dev_badges.append("📱 iOS")
+                elif "Windows" in d_title:
+                    dev_badges.append("💻 Windows")
+                elif "Android" in d_title:
+                    dev_badges.append("🤖 Android")
+                elif "v2ray" in d_title:
+                    dev_badges.append("💻 v2ray")
+                else:
+                    dev_badges.append("🌐 VPN")
+
+        dev_str = f" | {', '.join(sorted(set(dev_badges)))}" if dev_badges else ""
+        lines.append(f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n   ↳ 🔄 <b>{syncs} syncs</b>{dev_str}\n")
+
+    lines.append("<i>Для блокировки используйте <code>/ban &lt;id&gt;</code></i>")
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
+    await message.answer(text="\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+
+@router.message(Command("status"))
+async def cmd_status(message: types.Message):
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+        user = res.scalar_one_or_none()
+
+    if not user or not user.is_active:
+        await message.answer("🔒 <b>Ваш доступ ожидает подтверждения администратора.</b>", parse_mode=ParseMode.HTML)
+        return
+
+    sub_link = f"{APP_URL}/sub/{user.sub_token}"
+    kb = build_main_menu(user.sub_token, is_admin=message.from_user.id in ADMIN_IDS)
+    welcome_text = make_welcome_text(user, sub_link)
+    await message.answer(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+
+
+@router.message(Command("help"))
+async def cmd_help(message: types.Message):
+    text_content = (
+        "ℹ️ <b>О технологиях NoVPN</b>\n\n"
+        "• <b>VLESS Reality + XTLS-Vision:</b> весь трафик маскируется под легитимный TLS-трафик крупных российских корпоративных порталов (1C, X5 Group, Газета). ТСПУ видит лишь обычные зашифрованные сессии к разрешенным сайтам.\n"
+        "• <b>Амстердам 4K (1 Гбит/с):</b> высокопроизводительные ноды с алгоритмом BBR для просмотра YouTube в 4K/8K без задержек и буферизации.\n"
+        "• <b>Шлюзы РФ (L3 TSPU Bypass):</b> отечественные узлы (Smart Ape, SberCloud, TimeWeb) для обхода жестких белых списков и фильтраций провайдеров.\n"
+        "• <b>Международные релеи:</b> запасные маршруты в Европе и США с автоматическим мониторингом доступности и подбором минимального пинга.\n"
+        "• <b>MTProto Fake-TLS:</b> специальный прокси для Telegram с маскировкой под Яндекс — мгновенная передача фото, видео и звонков."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
+    await message.answer(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+
+@router.message(Command("reset"))
+async def cmd_reset(message: types.Message):
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+        user = res.scalar_one_or_none()
+
+    if not user or not user.is_active:
+        await message.answer("⛔ Доступ не активен.")
+        return
+
+    text_content = (
+        "⚠️ <b>Перевыпуск персональной ссылки</b>\n\n"
+        "Вы действительно хотите сбросить текущую ссылку подписки?\n\n"
+        "• Старая ссылка будет мгновенно аннулирована.\n"
+        "• Все подключенные ранее устройства перестанут синхронизироваться.\n"
+        "• Вам будет выдан новый уникальный ключ."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="✅ Да, перевыпустить ключ", callback_data="do_reset_token"),
+        types.InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")
+    )
+    await message.answer(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+
 @router.callback_query(F.data == "main_menu")
 async def callback_main_menu(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
@@ -866,6 +1006,33 @@ async def cron_loop():
         await asyncio.sleep(900)
 
 
+async def setup_bot_commands(bot: Bot):
+    """Настройка официального нативного меню команд Telegram (кнопка [Меню] внизу экрана)."""
+    user_cmds = [
+        BotCommand(command="start", description="Главное меню / Подписка"),
+        BotCommand(command="status", description="Статус подключения"),
+        BotCommand(command="help", description="Инструкция по настройке"),
+        BotCommand(command="reset", description="Сбросить / обновить ключ"),
+    ]
+    try:
+        await bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
+    except Exception as e:
+        logger.warning(f"[Commands] Ошибка установки общих команд: {e}")
+
+    admin_cmds = [
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="admin", description="👑 Панель управления"),
+        BotCommand(command="users", description="👥 Список пользователей"),
+        BotCommand(command="help", description="Инструкция по настройке"),
+        BotCommand(command="reset", description="Сбросить / обновить ключ"),
+    ]
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as e:
+            logger.warning(f"[Commands] Ошибка установки команд для админа {admin_id}: {e}")
+
+
 async def bot_polling_loop():
     if not BOT_TOKEN:
         logger.error("[Bot] BOT_TOKEN не задан! Бот не сможет обрабатывать сообщения.")
@@ -875,7 +1042,8 @@ async def bot_polling_loop():
     dp = Dispatcher()
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("[Bot] Telegram-бот запущен и ожидает пользователей...")
+    await setup_bot_commands(bot)
+    logger.info("[Bot] Telegram-бот запущен с нативным меню команд и ожидает пользователей...")
 
     while True:
         try:
@@ -894,11 +1062,6 @@ async def lifespan(app: FastAPI):
     await init_db()
     await sync_upstream_fleet()
     await sync_upstream_telemetry()
-    c_task = asyncio.create_task(cron_loop())
-    b_task = asyncio.create_task(bot_polling_loop())
-    yield
-    c_task.cancel()
-    b_task.cancel()
     c_task = asyncio.create_task(cron_loop())
     b_task = asyncio.create_task(bot_polling_loop())
     yield
