@@ -181,8 +181,8 @@ class UserDevice(Base):
 KNOWN_FLEET_USERS = [
     {
         "telegram_id": 8622456469,
-        "username": "vanya_m2",
-        "first_name": "Ваня",
+        "username": "none",
+        "first_name": "none",
         "sub_token": "4305d56015dfcf2b27d4d495865a8326",
         "is_active": 1,
         "role": "admin",
@@ -301,7 +301,7 @@ async def init_db():
 
         for admin_id in ADMIN_IDS:
             try:
-                await conn.execute(text(f"UPDATE users SET is_active = 1, role = 'admin' WHERE telegram_id = {admin_id};"))
+                await conn.execute(text(f"UPDATE users SET is_active = 1, role = 'admin', username = 'none', first_name = 'none' WHERE telegram_id = {admin_id};"))
             except Exception:
                 pass
 
@@ -954,15 +954,8 @@ async def build_users_list_message(session: AsyncSession) -> str:
     for u in users:
         is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
         status_tag = "👑 <i>ADMIN</i>" if is_admin_user else ("🟢 <i>АКТИВЕН</i>" if u.is_active == 1 else "⏳ <i>ОЖИДАНИЕ</i>")
-        u_first = (u.first_name or "").strip()
-        u_user = (u.username or "").strip()
-        if u_first.lower() == "none":
-            u_first = ""
-        if u_user.lower() == "none":
-            u_user = ""
-
-        name = html.escape(u_first or u_user or "Пользователь")
-        uname = f" (@{html.escape(u_user)})" if u_user else ""
+        name = html.escape(u.first_name or u.username or "none")
+        uname = f" (@{html.escape(u.username)})" if u.username else ""
         syncs = u.sub_sync_count or 0
 
         # Получаем зарегистрированные слоты устройств из базы данных
@@ -1018,16 +1011,6 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
     await sync_upstream_telemetry()
 
     async with AsyncSessionLocal() as session:
-        if callback.from_user:
-            res_u = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
-            u_obj = res_u.scalar_one_or_none()
-            if u_obj:
-                if callback.from_user.first_name:
-                    u_obj.first_name = callback.from_user.first_name
-                if callback.from_user.username:
-                    u_obj.username = callback.from_user.username
-                await session.commit()
-
         text = await build_users_list_message(session)
 
     kb = InlineKeyboardBuilder()
@@ -1189,16 +1172,6 @@ async def cmd_users(message: types.Message):
 
     await sync_upstream_telemetry()
     async with AsyncSessionLocal() as session:
-        if message.from_user:
-            res_u = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
-            u_obj = res_u.scalar_one_or_none()
-            if u_obj:
-                if message.from_user.first_name:
-                    u_obj.first_name = message.from_user.first_name
-                if message.from_user.username:
-                    u_obj.username = message.from_user.username
-                await session.commit()
-
         text = await build_users_list_message(session)
 
     kb = InlineKeyboardBuilder()
