@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import html
 import logging
 import os
@@ -8,7 +9,7 @@ import secrets
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 import uvicorn
@@ -214,6 +215,26 @@ class ProxyServer(Base):
     protocol = Column(String)
     tier = Column(Integer, default=3)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+DEFAULT_MAX_DEVICES = 5
+DEVICE_INACTIVE_TTL_DAYS = 30
+
+
+class UserDevice(Base):
+    """
+    Таблица авторизованных устройств пользователя.
+    Лимит: до 5 устройств на обычного пользователя.
+    Для администратора (роль 'admin') — ПОЛНЫЙ БЕЗЛИМИТ.
+    """
+    __tablename__ = "user_devices"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    sub_token = Column(String, index=True, nullable=False)
+    device_fp = Column(String, index=True, nullable=False)
+    device_label = Column(String, nullable=True)
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
 
 
 KNOWN_FLEET_USERS = [
@@ -658,8 +679,10 @@ async def callback_admin_dashboard(callback: types.CallbackQuery):
         f"• Всего синхронизаций конфигураций: <b>{total_syncs}</b>\n\n"
         f"🌐 <b>Узлов в сети:</b> {len(current_fleet_nodes)}\n\n"
         "<i>Команды быстрого управления:</i>\n"
+        "• <code>/users</code> — список пользователей и устройств\n"
         "• <code>/approve &lt;tg_id&gt;</code> — выдать доступ\n"
-        "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ"
+        "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ\n"
+        "• <code>/clear_devices &lt;tg_id&gt;</code> — сбросить слоты девайсов"
     )
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="adm_list_users"))
@@ -680,35 +703,31 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
         res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
         users = res.scalars().all()
 
-    lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
-    for u in users:
-        status_ico = "🟢" if u.is_active == 1 else "⏳"
-        name = html.escape(u.first_name or u.username or "Пользователь")
-        uname = f"(@{u.username})" if u.username else ""
-        syncs = u.sub_sync_count or 0
+        lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
+        for u in users:
+            status_ico = "🟢" if u.is_active == 1 else "⏳"
+            name = html.escape(u.first_name or u.username or "Пользователь")
+            uname = f"(@{u.username})" if u.username else ""
+            syncs = u.sub_sync_count or 0
 
-        # Определяем активные клиенты из кэша телеметрии
-        v_data = vps_telemetry_cache.get(u.sub_token, {})
-        devices = v_data.get("devices", {})
-        dev_badges = []
-        if devices:
-            for d_info in devices.values():
-                d_title = d_info.get("title", "")
-                if "iPhone" in d_title or "iOS" in d_title:
-                    dev_badges.append("📱 iOS")
-                elif "Windows" in d_title:
-                    dev_badges.append("💻 Windows")
-                elif "Android" in d_title:
-                    dev_badges.append("🤖 Android")
-                elif "v2ray" in d_title:
-                    dev_badges.append("💻 v2ray")
-                else:
-                    dev_badges.append("🌐 VPN")
+            # Получаем зарегистрированные слоты устройств из постоянной БД
+            dev_res = await session.execute(
+                select(UserDevice).where(UserDevice.sub_token == u.sub_token).order_by(UserDevice.last_seen.desc())
+            )
+            u_devices = dev_res.scalars().all()
+            dev_labels = [d.device_label for d in u_devices if d.device_label]
 
-        dev_str = f" | {', '.join(sorted(set(dev_badges)))}" if dev_badges else ""
-        lines.append(f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n   ↳ 🔄 <b>{syncs} syncs</b>{dev_str}\n")
+            is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
+            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{DEFAULT_MAX_DEVICES}</b>"
+            dev_info_str = f" [{', '.join(dev_labels)}]" if dev_labels else ""
 
-    lines.append("<i>Для блокировки используйте <code>/ban &lt;id&gt;</code></i>")
+            lines.append(
+                f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n"
+                f"   ↳ 🔄 <b>{syncs} syncs</b> | {quota_str}{dev_info_str}\n"
+            )
+
+    lines.append("<i>Сброс слотов: <code>/clear_devices &lt;id&gt;</code></i>")
+    lines.append("<i>Блокировка: <code>/ban &lt;id&gt;</code></i>")
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
@@ -775,6 +794,36 @@ async def cmd_ban(message: types.Message):
             await message.answer("Пользователь не найден.")
 
 
+@router.message(Command("clear_devices"))
+async def cmd_clear_devices(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Использование: <code>/clear_devices &lt;telegram_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+    target_id = int(parts[1])
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == target_id))
+        target_user = res.scalar_one_or_none()
+        if not target_user:
+            await message.answer(f"Пользователь с ID <code>{target_id}</code> не найден.", parse_mode=ParseMode.HTML)
+            return
+
+        await session.execute(
+            delete(UserDevice).where(UserDevice.sub_token == target_user.sub_token)
+        )
+        await session.commit()
+
+    uname = html.escape(target_user.first_name or target_user.username or 'Пользователь')
+    await message.answer(
+        f"✅ <b>Слоты устройств сброшены!</b>\n\n"
+        f"Пользователь: <b>{uname}</b> (ID: <code>{target_id}</code>)\n"
+        f"Теперь пользователь может заново привязать свои устройства (до {DEFAULT_MAX_DEVICES} слотов) без смены ссылки.",
+        parse_mode=ParseMode.HTML
+    )
+
+
 @router.message(Command("admin"))
 async def cmd_admin(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -804,9 +853,10 @@ async def cmd_admin(message: types.Message):
         f"• Всего синхронизаций конфигураций: <b>{total_syncs}</b>\n\n"
         f"🌐 <b>Узлов в сети:</b> {len(current_fleet_nodes)}\n\n"
         "<i>Команды быстрого управления:</i>\n"
-        "• <code>/users</code> — список пользователей с устройствами\n"
+        "• <code>/users</code> — список пользователей и устройств\n"
         "• <code>/approve &lt;tg_id&gt;</code> — выдать доступ\n"
-        "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ"
+        "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ\n"
+        "• <code>/clear_devices &lt;tg_id&gt;</code> — сбросить слоты устройств"
     )
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="adm_list_users"))
@@ -824,34 +874,31 @@ async def cmd_users(message: types.Message):
         res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
         users = res.scalars().all()
 
-    lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
-    for u in users:
-        status_ico = "🟢" if u.is_active == 1 else "⏳"
-        name = html.escape(u.first_name or u.username or "Пользователь")
-        uname = f"(@{u.username})" if u.username else ""
-        syncs = u.sub_sync_count or 0
+        lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
+        for u in users:
+            status_ico = "🟢" if u.is_active == 1 else "⏳"
+            name = html.escape(u.first_name or u.username or "Пользователь")
+            uname = f"(@{u.username})" if u.username else ""
+            syncs = u.sub_sync_count or 0
 
-        v_data = vps_telemetry_cache.get(u.sub_token, {})
-        devices = v_data.get("devices", {})
-        dev_badges = []
-        if devices:
-            for d_info in devices.values():
-                d_title = d_info.get("title", "")
-                if "iPhone" in d_title or "iOS" in d_title:
-                    dev_badges.append("📱 iOS")
-                elif "Windows" in d_title:
-                    dev_badges.append("💻 Windows")
-                elif "Android" in d_title:
-                    dev_badges.append("🤖 Android")
-                elif "v2ray" in d_title:
-                    dev_badges.append("💻 v2ray")
-                else:
-                    dev_badges.append("🌐 VPN")
+            # Получаем зарегистрированные слоты устройств из базы данных
+            dev_res = await session.execute(
+                select(UserDevice).where(UserDevice.sub_token == u.sub_token).order_by(UserDevice.last_seen.desc())
+            )
+            u_devices = dev_res.scalars().all()
+            dev_labels = [d.device_label for d in u_devices if d.device_label]
 
-        dev_str = f" | {', '.join(sorted(set(dev_badges)))}" if dev_badges else ""
-        lines.append(f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n   ↳ 🔄 <b>{syncs} syncs</b>{dev_str}\n")
+            is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
+            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{DEFAULT_MAX_DEVICES}</b>"
+            dev_info_str = f" [{', '.join(dev_labels)}]" if dev_labels else ""
 
-    lines.append("<i>Для блокировки используйте <code>/ban &lt;id&gt;</code></i>")
+            lines.append(
+                f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n"
+                f"   ↳ 🔄 <b>{syncs} syncs</b> | {quota_str}{dev_info_str}\n"
+            )
+
+    lines.append("<i>Сброс слотов: <code>/clear_devices &lt;id&gt;</code></i>")
+    lines.append("<i>Блокировка: <code>/ban &lt;id&gt;</code></i>")
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
@@ -1041,12 +1088,15 @@ async def callback_do_reset_token(callback: types.CallbackQuery):
             await callback.answer("Ошибка: доступ не активен.", show_alert=True)
             return
 
+        old_token = user.sub_token
         new_token = generate_secure_token()
         user.sub_token = new_token
         user.last_seen_at = datetime.utcnow()
+        if old_token:
+            await session.execute(delete(UserDevice).where(UserDevice.sub_token == old_token))
         await session.commit()
         await session.refresh(user)
-        logger.info(f"[Security] Пользователь ID={user.telegram_id} перевыпустил токен подписки.")
+        logger.info(f"[Security] Пользователь ID={user.telegram_id} перевыпустил токен и сбросил привязки девайсов.")
 
     new_sub_link = f"{APP_URL}/sub/{new_token}"
     text_content = (
@@ -1106,6 +1156,7 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="admin", description="👑 Панель управления"),
         BotCommand(command="users", description="👥 Список пользователей"),
+        BotCommand(command="clear_devices", description="📱 Сбросить устройства пользователя"),
         BotCommand(command="help", description="Инструкция по настройке"),
         BotCommand(command="reset", description="Сбросить / обновить ключ"),
     ]
@@ -1429,6 +1480,91 @@ def render_web_landing(user: User, token: str) -> str:
 </html>"""
 
 
+async def check_and_register_device(
+    user: User, token: str, request: Request, ua_lower: str, db: AsyncSession
+) -> tuple[bool, str]:
+    """
+    Проверяет и регистрирует устройство.
+    - Для администратора (user.role == 'admin' или telegram_id in ADMIN_IDS): ПОЛНЫЙ БЕЗЛИМИТ.
+    - Для обычных пользователей: квота до DEFAULT_MAX_DEVICES (5) слотов.
+    - TTL автоочистка: удаляет неактивные слоты старше DEVICE_INACTIVE_TTL_DAYS (30 дней).
+    Возвращает (is_allowed, device_label).
+    """
+    is_admin = (user.role == "admin") or (user.telegram_id in ADMIN_IDS)
+
+    hwid = request.headers.get("X-Hwid", "").strip()
+    device_model = request.headers.get("X-Device-Model", "").strip()
+    device_os = request.headers.get("X-Device-Os", "").strip()
+
+    if hwid:
+        fp = f"hwid:{hwid}"
+        label = f"📱 {device_model or 'Happ'} ({device_os or 'iOS/Android'})".strip()
+    else:
+        # Для других клиентов (v2rayNG, Hiddify, Streisand) формируем сигнатуру
+        clean_ua = ua_lower.split("/")[0][:32]
+        fp = "client:" + hashlib.sha256(clean_ua.encode("utf-8")).hexdigest()[:16]
+        if "v2ray" in clean_ua:
+            label = "🤖 v2rayNG"
+        elif "hiddify" in clean_ua:
+            label = "⚡ Hiddify"
+        elif "streisand" in clean_ua:
+            label = "🍏 Streisand"
+        elif "sing-box" in clean_ua:
+            label = "📦 sing-box"
+        elif "shadowrocket" in clean_ua:
+            label = "🚀 Shadowrocket"
+        elif "clash" in clean_ua:
+            label = "🐱 Clash"
+        else:
+            label = f"💻 {clean_ua.capitalize()}"
+
+    # 1. TTL автоочистка: удаляем слоты старше 30 дней
+    cutoff = datetime.utcnow() - timedelta(days=DEVICE_INACTIVE_TTL_DAYS)
+    await db.execute(
+        delete(UserDevice).where(UserDevice.sub_token == token, UserDevice.last_seen < cutoff)
+    )
+
+    # 2. Проверяем, зарегистрирован ли уже этот отпечаток
+    dev_res = await db.execute(
+        select(UserDevice).where(UserDevice.sub_token == token, UserDevice.device_fp == fp)
+    )
+    existing_dev = dev_res.scalar_one_or_none()
+
+    if existing_dev:
+        existing_dev.last_seen = datetime.utcnow()
+        if label:
+            existing_dev.device_label = label
+        await db.commit()
+        return True, label
+
+    # 3. Если устройство новое: проверяем квоту для не-админов
+    if not is_admin:
+        count_res = await db.execute(
+            select(func.count(UserDevice.id)).where(UserDevice.sub_token == token)
+        )
+        active_count = count_res.scalar_one() or 0
+        if active_count >= DEFAULT_MAX_DEVICES:
+            logger.warning(
+                f"[Device Limit] Превышен лимит устройств для user_id={user.telegram_id} "
+                f"({active_count}/{DEFAULT_MAX_DEVICES}). Запрос от '{label}' перенаправлен в Honeypot."
+            )
+            return False, label
+
+    # 4. Регистрируем новое устройство
+    new_dev = UserDevice(
+        user_id=user.id,
+        sub_token=token,
+        device_fp=fp,
+        device_label=label,
+        first_seen=datetime.utcnow(),
+        last_seen=datetime.utcnow(),
+    )
+    db.add(new_dev)
+    await db.commit()
+    logger.info(f"[Device Added] Новый слот устройства для user_id={user.telegram_id}: '{label}'")
+    return True, label
+
+
 @app.get("/")
 async def root():
     # Заглушка для healthcheck Railway (полная маскировка от сканеров)
@@ -1510,7 +1646,27 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
         }
         return Response(content=decoy_encoded, media_type="text/plain; charset=utf-8", headers=headers)
 
-    # 5. Легитимная выдача подписки для официальных клиентов
+    # 5. Квотирование устройств (Device Limiter & TTL)
+    allowed, dev_label = await check_and_register_device(user, token, request, ua_lower, db)
+    if not allowed:
+        # Лимит устройств исчерпан: тихий слив в Honeypot (первые 5 девайсов продолжают работать)
+        limit_decoy = [
+            make_banner("🛡️ ─ [ novpn • device limit reached ] ─"),
+            "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:443?security=none#%F0%9F%94%92%20novpn%20%E2%80%A2%20Device%20Limit%20Reached%20%28Max%205%29",
+            "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:80?security=none#%E2%9A%A0%EF%B8%8F%20Contact%20Admin%20In%20Telegram",
+            "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:8080?security=none#%F0%9F%93%B1%20Use%20Reset%20To%20Reassign%20Slots",
+        ]
+        raw_decoy = "\n".join(limit_decoy)
+        decoy_encoded = base64.b64encode(raw_decoy.encode("utf-8")).decode("utf-8")
+        headers = {
+            "Profile-Title": "novpn-limit",
+            "Profile-Update-Interval": "24",
+            "Subscription-Userinfo": "upload=0; download=0; total=0; expire=0",
+            "Content-Disposition": 'attachment; filename="novpn.txt"; filename*=UTF-8\'\'novpn',
+        }
+        return Response(content=decoy_encoded, media_type="text/plain; charset=utf-8", headers=headers)
+
+    # 6. Легитимная выдача подписки для официальных клиентов
     user.last_sub_sync = datetime.utcnow()
     user.sub_sync_count = (user.sub_sync_count or 0) + 1
     await db.commit()
