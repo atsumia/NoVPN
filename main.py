@@ -305,6 +305,12 @@ async def init_db():
             except Exception:
                 pass
 
+        # Устраняем дубликаты пользователей по sub_token если они возникли
+        try:
+            await conn.execute(text("DELETE FROM users WHERE id NOT IN (SELECT MAX(id) FROM users GROUP BY sub_token);"))
+        except Exception:
+            pass
+
         # Очистка синтетических тестовых записей устройств
         try:
             await conn.execute(text("DELETE FROM user_devices WHERE device_label LIKE '%iPhone 14 Pro%' OR device_label LIKE '%Happ 3.2.0%' OR device_label LIKE '%v2rayNG%';"))
@@ -575,7 +581,7 @@ async def sync_upstream_telemetry():
                         for token, v_data in vps_users.items():
                             v_fetch = v_data.get("fetch_count", 0)
                             res = await session_db.execute(select(User).where(User.sub_token == token))
-                            u = res.scalar_one_or_none()
+                            u = res.scalars().first()
                             if u:
                                 if (u.sub_sync_count or 0) < v_fetch:
                                     u.sub_sync_count = v_fetch
@@ -2060,7 +2066,7 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
         sub_rate_limit_history[client_ip] = req_times
 
     user_res = await db.execute(select(User).where(User.sub_token == token))
-    user = user_res.scalar_one_or_none()
+    user = user_res.scalars().first()
     if not user:
         raise HTTPException(status_code=404, detail="Subscription token not found or revoked")
 
@@ -2177,7 +2183,7 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
 @app.get("/open/{client}")
 async def redirect_to_client(client: str, token: str, db: AsyncSession = Depends(get_db)):
     user_res = await db.execute(select(User).where(User.sub_token == token))
-    user = user_res.scalar_one_or_none()
+    user = user_res.scalars().first()
     if not user or not user.is_active:
         return HTMLResponse(
             "<!DOCTYPE html><html><body style='background:#0b0f19;color:#fff;text-align:center;padding:50px;font-family:sans-serif;'>"
