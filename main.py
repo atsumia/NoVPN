@@ -132,13 +132,57 @@ class ProxyServer(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+KNOWN_FLEET_USERS = [
+    {
+        "telegram_id": 8622456469,
+        "username": "none",
+        "first_name": "none",
+        "sub_token": "4305d56015dfcf2b27d4d495865a8326",
+        "is_active": 1,
+        "role": "admin",
+    },
+    {
+        "telegram_id": 6614500398,
+        "username": "kiryuha",
+        "first_name": "Кирилл",
+        "sub_token": "ae42247fbc3271c58d7016fa4f571a4c",
+        "is_active": 1,
+        "role": "user",
+    },
+    {
+        "telegram_id": 7808666968,
+        "username": "vova",
+        "first_name": "Вова",
+        "sub_token": "4b24c649cbbecf424887e4c449cd6264",
+        "is_active": 1,
+        "role": "user",
+    },
+    {
+        "telegram_id": 1055426403,
+        "username": "maximius",
+        "first_name": "Максим",
+        "sub_token": "f86bdeb76cffbd34e45e3def8ccbf478",
+        "is_active": 1,
+        "role": "vip",
+    },
+    {
+        "telegram_id": 9990000001,
+        "username": "babushka",
+        "first_name": "Бабушка",
+        "sub_token": "ec02c7c499ea67bb2f1d074582720fe8",
+        "is_active": 1,
+        "role": "user",
+    },
+]
+
+
 def generate_secure_token() -> str:
     """Генерация криптографически стойкого токена подписки."""
     return secrets.token_hex(16)
 
 
 async def init_db():
-    logger.info("[DB] Инициализация базы данных и проверка прав...")
+    logger.info("[DB] Инициализация базы данных и синхронизация пользователей...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -161,14 +205,39 @@ async def init_db():
                 except Exception:
                     pass
 
-        # Гарантируем, что администратор всегда активен
+        # Синхронизация действующих пользователей и их существующих ключей
+        for udata in KNOWN_FLEET_USERS:
+            try:
+                res = await conn.execute(text(f"SELECT id FROM users WHERE telegram_id = {udata['telegram_id']} LIMIT 1;"))
+                row = res.fetchone()
+                if row:
+                    await conn.execute(text(
+                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}' "
+                        f"WHERE telegram_id = {udata['telegram_id']};"
+                    ))
+                else:
+                    t_res = await conn.execute(text(f"SELECT id FROM users WHERE sub_token = '{udata['sub_token']}' LIMIT 1;"))
+                    t_row = t_res.fetchone()
+                    if t_row:
+                        await conn.execute(text(
+                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}' "
+                            f"WHERE sub_token = '{udata['sub_token']}';"
+                        ))
+                    else:
+                        await conn.execute(text(
+                            f"INSERT INTO users (telegram_id, username, first_name, sub_token, is_active, role) "
+                            f"VALUES ({udata['telegram_id']}, '{udata['username']}', '{udata['first_name']}', '{udata['sub_token']}', {udata['is_active']}, '{udata['role']}');"
+                        ))
+            except Exception as e:
+                logger.error(f"[DB Seed Error] {e}")
+
         for admin_id in ADMIN_IDS:
             try:
                 await conn.execute(text(f"UPDATE users SET is_active = 1, role = 'admin' WHERE telegram_id = {admin_id};"))
             except Exception:
                 pass
 
-    logger.info(f"[DB] База данных готова. Список администраторов: {ADMIN_IDS}")
+    logger.info(f"[DB] База данных готова и синхронизирована. Активных пользователей: {len(KNOWN_FLEET_USERS)}")
 
 
 async def sync_upstream_fleet():
