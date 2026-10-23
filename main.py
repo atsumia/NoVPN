@@ -181,8 +181,8 @@ class UserDevice(Base):
 KNOWN_FLEET_USERS = [
     {
         "telegram_id": 8622456469,
-        "username": "none",
-        "first_name": "none",
+        "username": "vanya_m2",
+        "first_name": "Ваня",
         "sub_token": "4305d56015dfcf2b27d4d495865a8326",
         "is_active": 1,
         "role": "admin",
@@ -277,7 +277,7 @@ async def init_db():
                     curr_syncs = row[1] or 0
                     new_syncs = max(curr_syncs, udata.get("sub_sync_count", 0))
                     await conn.execute(text(
-                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs}, max_devices = {max_dev} "
+                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs}, max_devices = {max_dev}, username = '{udata['username']}', first_name = '{udata['first_name']}' "
                         f"WHERE telegram_id = {udata['telegram_id']};"
                     ))
                 else:
@@ -287,7 +287,7 @@ async def init_db():
                         curr_syncs = t_row[1] or 0
                         new_syncs = max(curr_syncs, udata.get("sub_sync_count", 0))
                         await conn.execute(text(
-                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs}, max_devices = {max_dev} "
+                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs}, max_devices = {max_dev}, username = '{udata['username']}', first_name = '{udata['first_name']}' "
                             f"WHERE sub_token = '{udata['sub_token']}';"
                         ))
                     else:
@@ -304,6 +304,12 @@ async def init_db():
                 await conn.execute(text(f"UPDATE users SET is_active = 1, role = 'admin' WHERE telegram_id = {admin_id};"))
             except Exception:
                 pass
+
+        # Очистка синтетических тестовых записей устройств
+        try:
+            await conn.execute(text("DELETE FROM user_devices WHERE device_label LIKE '%iPhone 14 Pro%' OR device_label LIKE '%Happ 3.2.0%' OR device_label LIKE '%v2rayNG%';"))
+        except Exception:
+            pass
 
     logger.info(f"[DB] База данных готова и синхронизирована. Активных пользователей: {len(KNOWN_FLEET_USERS)}")
 
@@ -948,8 +954,15 @@ async def build_users_list_message(session: AsyncSession) -> str:
     for u in users:
         is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
         status_tag = "👑 <i>ADMIN</i>" if is_admin_user else ("🟢 <i>АКТИВЕН</i>" if u.is_active == 1 else "⏳ <i>ОЖИДАНИЕ</i>")
-        name = html.escape(u.first_name or u.username or "Пользователь")
-        uname = f" (@{u.username})" if u.username else ""
+        u_first = (u.first_name or "").strip()
+        u_user = (u.username or "").strip()
+        if u_first.lower() == "none":
+            u_first = ""
+        if u_user.lower() == "none":
+            u_user = ""
+
+        name = html.escape(u_first or u_user or "Пользователь")
+        uname = f" (@{html.escape(u_user)})" if u_user else ""
         syncs = u.sub_sync_count or 0
 
         # Получаем зарегистрированные слоты устройств из базы данных
@@ -1005,6 +1018,16 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
     await sync_upstream_telemetry()
 
     async with AsyncSessionLocal() as session:
+        if callback.from_user:
+            res_u = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+            u_obj = res_u.scalar_one_or_none()
+            if u_obj:
+                if callback.from_user.first_name:
+                    u_obj.first_name = callback.from_user.first_name
+                if callback.from_user.username:
+                    u_obj.username = callback.from_user.username
+                await session.commit()
+
         text = await build_users_list_message(session)
 
     kb = InlineKeyboardBuilder()
@@ -1166,6 +1189,16 @@ async def cmd_users(message: types.Message):
 
     await sync_upstream_telemetry()
     async with AsyncSessionLocal() as session:
+        if message.from_user:
+            res_u = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+            u_obj = res_u.scalar_one_or_none()
+            if u_obj:
+                if message.from_user.first_name:
+                    u_obj.first_name = message.from_user.first_name
+                if message.from_user.username:
+                    u_obj.username = message.from_user.username
+                await session.commit()
+
         text = await build_users_list_message(session)
 
     kb = InlineKeyboardBuilder()
