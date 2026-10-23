@@ -122,6 +122,9 @@ UPSTREAM_FLEET_URL = os.getenv(
     "https://sub.asdqwemary.de5.net:2053/sub/4305d56015dfcf2b27d4d495865a8326?raw=1"
 )
 
+DEFAULT_MAX_DEVICES = 5
+DEVICE_INACTIVE_TTL_DAYS = 30
+
 
 class User(Base):
     """
@@ -151,10 +154,6 @@ class ProxyServer(Base):
     protocol = Column(String)
     tier = Column(Integer, default=3)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-
-DEFAULT_MAX_DEVICES = 5
-DEVICE_INACTIVE_TTL_DAYS = 30
 
 
 class UserDevice(Base):
