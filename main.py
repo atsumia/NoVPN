@@ -1152,7 +1152,12 @@ async def lifespan(app: FastAPI):
     b_task.cancel()
 
 
-app = FastAPI(title="NoVPN Gateway & Auth Service", lifespan=lifespan)
+app = FastAPI(
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=lifespan
+)
 
 
 async def get_db():
@@ -1426,12 +1431,8 @@ def render_web_landing(user: User, token: str) -> str:
 
 @app.get("/")
 async def root():
-    return {
-        "status": "online",
-        "service": "NoVPN",
-        "app_url": APP_URL,
-        "active_fleet_nodes": len(current_fleet_nodes),
-    }
+    # Заглушка для healthcheck Railway (полная маскировка от сканеров)
+    return {"status": "ok"}
 
 
 @app.get("/sub/{token}")
@@ -1513,6 +1514,13 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
     user.last_sub_sync = datetime.utcnow()
     user.sub_sync_count = (user.sub_sync_count or 0) + 1
     await db.commit()
+
+    device_model = request.headers.get("X-Device-Model", "").strip()
+    device_os = request.headers.get("X-Device-Os", "").strip()
+    if device_model or device_os:
+        cached = vps_telemetry_cache.setdefault(token, {"devices": {}})
+        dev_title = f"{device_model} ({device_os})".strip(" ()")
+        cached["devices"][dev_title] = {"title": dev_title}
 
     raw_nodes = list(current_fleet_nodes) if current_fleet_nodes else list(DEDICATED_NODES)
     clean_nodes = [sanitize_node(n) for n in raw_nodes]
