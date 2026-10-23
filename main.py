@@ -4,6 +4,7 @@ import html
 import logging
 import os
 import re
+import secrets
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ import uvicorn
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramConflictError
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -47,11 +48,13 @@ engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
-def make_banner(text):
-    encoded = urllib.parse.quote(text)
+
+def make_banner(text_label: str) -> str:
+    encoded = urllib.parse.quote(text_label)
     return f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:0?security=none&encryption=none&type=tcp&headerType=none#{encoded}"
 
-# Собственный кластер Амстердам (VLESS Reality + XTLS-Vision)
+
+# Эталонный кластер NoVPN (22 проверенных узла с тремя логическими секциями)
 DEDICATED_NODES = [
     make_banner("⚡ ─ [ амстердам • 4k ] ─"),
     "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=faster.lizeg.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
@@ -76,17 +79,36 @@ DEDICATED_NODES = [
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@93.89.220.37:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=ibm.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AA%F0%9F%87%AA%20Relay%20%E2%80%A2%20Estonia",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@169.40.42.168:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=yahoo.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%BA%F0%9F%87%B8%20Relay%20%E2%80%A2%20United%20States",
 ]
-# MTProto Proxy для быстрого подключения Telegram
+
+# Кэш актуального флота (инициализируется локальной конфигурацией, периодически обновляется)
+current_fleet_nodes = list(DEDICATED_NODES)
+
+# MTProto Proxy для подключения Telegram без сторонних приложений
 MTPROTO_LINK = "tg://proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
 MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
 
+UPSTREAM_FLEET_URL = os.getenv(
+    "UPSTREAM_FLEET_URL",
+    "https://sub.asdqwemary.de5.net/sub/4305d56015dfcf2b27d4d495865a8326?raw=1"
+)
+
 
 class User(Base):
+    """
+    Таблица пользователей NoVPN.
+    Каждый telegram_id строго изолирован и привязан к уникальному sub_token.
+    """
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, index=True)
-    sub_token = Column(String, unique=True, default=lambda: uuid.uuid4().hex)
+    telegram_id = Column(BigInteger, unique=True, index=True, nullable=False)
+    username = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    sub_token = Column(String, unique=True, index=True, nullable=False)
+    is_active = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_sub_sync = Column(DateTime, nullable=True)
+    sub_sync_count = Column(Integer, default=0)
 
 
 class ProxyServer(Base):
@@ -98,288 +120,345 @@ class ProxyServer(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+def generate_secure_token() -> str:
+    """Генерация криптографически безопасного и уникального токена подписки."""
+    return secrets.token_hex(16)
+
+
 async def init_db():
-    logger.info("[DB] Инициализация базы данных...")
+    logger.info("[DB] Инициализация базы данных и проверка схемы...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        if "postgresql" in DATABASE_URL:
+
+        # Безопасное добавление новых колонок в таблицу users (Postgres / SQLite)
+        new_columns = [
+            ("username", "VARCHAR"),
+            ("first_name", "VARCHAR"),
+            ("is_active", "INTEGER DEFAULT 1"),
+            ("last_seen_at", "TIMESTAMP"),
+            ("last_sub_sync", "TIMESTAMP"),
+            ("sub_sync_count", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_type in new_columns:
             try:
-                await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN IF NOT EXISTS tier INTEGER DEFAULT 3;"))
+                await conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+            except Exception:
+                try:
+                    await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};"))
+                except Exception:
+                    pass
+
+        try:
+            await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN IF NOT EXISTS tier INTEGER DEFAULT 3;"))
+        except Exception:
+            try:
+                await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN tier INTEGER DEFAULT 3;"))
             except Exception:
                 pass
-    logger.info("[DB] База данных готова.")
+    logger.info("[DB] База данных готова к обслуживанию клиентов.")
 
 
-RU_WHITELIST_SOURCES = [
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-all.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-SNI-RU-all.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/WHITE-CIDR-RU-checked.txt",
-    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/reality",
-]
-
-TELEGRAM_CHANNELS = [
-    "igareq",
-    "whitelist_vpn",
-    "ru_vless",
-    "vpn_free_russia",
-    "VLESS_REALITY",
-    "vless_configs",
-    "reality_free",
-    "vpn_fail_ru",
-    "proxy_gate_ru",
-]
-
-RU_WHITE_DOMAINS = (
-    "yandex.ru", "ya.ru", "vk.com", "vk.ru", "mail.ru", "dzen.ru",
-    "gosuslugi.ru", "ozon.ru", "wildberries.ru", "wb.ru", "tinkoff.ru",
-    "tbank.ru", "sberbank.ru", "sber.ru", "kinopoisk.ru", "rutube.ru",
-    "rambler.ru", "2gis.ru", "megafon.ru", "mts.ru", "beeline.ru",
-    "t2.ru", "tele2.ru", "avito.ru",
-)
-
-BLOCKED_IP_PREFIXES = (
-    "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.",
-    "104.22.", "104.23.", "104.24.", "104.25.", "104.26.", "104.27.",
-    "104.28.", "104.29.", "104.30.", "104.31.", "172.64.", "172.65.",
-    "172.66.", "172.67.", "151.101.",
-)
-
-
-def parse_proxy_uri(uri: str, source_type: str = "other") -> dict | None:
-    uri = uri.strip()
-    if not uri or uri.startswith("#"):
-        return None
+async def sync_upstream_fleet():
+    """
+    Фоновая синхронизация с амстердамским харвестером VPS.
+    Railway получает проверенный флот с низким пингом и авто-заменой нод Nova.
+    При сбое сети Railway всегда надежно отдает DEDICATED_NODES без перебоев.
+    """
+    global current_fleet_nodes
     try:
-        parsed = urllib.parse.urlparse(uri)
-        scheme = parsed.scheme.lower()
-        if scheme not in ("vless", "hy2", "hysteria2"):
-            return None
+        async with aiohttp.ClientSession() as session:
+            headers = {"User-Agent": "NoVPN-Railway-Gateway/2.0"}
+            async with session.get(UPSTREAM_FLEET_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.text()
+                    lines = []
+                    try:
+                        decoded = base64.b64decode(data.strip()).decode("utf-8", errors="ignore")
+                        lines = [x.strip() for x in decoded.splitlines() if x.strip()]
+                    except Exception:
+                        lines = [x.strip() for x in data.splitlines() if x.strip()]
 
-        host = parsed.hostname
-        if not host or any(host.startswith(p) for p in BLOCKED_IP_PREFIXES):
-            return None
-
-        query_params = urllib.parse.parse_qs(parsed.query)
-        net_type = query_params.get("type", ["tcp"])[0].lower()
-        sni = query_params.get("sni", [""])[0].lower()
-
-        is_ru_sni = any(sni.endswith(d) or sni == d for d in RU_WHITE_DOMAINS) or sni.endswith(".ru")
-
-        if scheme == "vless":
-            security = query_params.get("security", [""])[0].lower()
-            pbk = query_params.get("pbk", [""])[0]
-            if security != "reality" or not pbk:
-                return None
-
-        tag_name = urllib.parse.unquote(parsed.fragment).lower()
-        has_ru_tag = any(k in tag_name for k in ("ru", "white", "бс", "бел", "relay", "yandex", "россия"))
-
-        if is_ru_sni:
-            tier = 1
-        elif source_type == "whitelist" or has_ru_tag:
-            tier = 2
-        else:
-            tier = 3
-
-        return {
-            "uri": uri,
-            "scheme": scheme,
-            "net_type": net_type,
-            "tier": tier,
-        }
-    except Exception:
-        return None
+                    vless_nodes = [l for l in lines if l.startswith("vless://")]
+                    if len(vless_nodes) >= 10:
+                        current_fleet_nodes = lines
+                        logger.info(f"[Fleet] Обновлен флот с VPS: {len(current_fleet_nodes)} строк ({len(vless_nodes)} нод).")
+    except Exception as e:
+        logger.warning(f"[Fleet] Синхронизация флота с VPS временно недоступна ({e}). Используется локальный эталон.")
 
 
-async def fetch_feed(session: aiohttp.ClientSession, url: str) -> list[str]:
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status != 200:
-                return []
-            text_data = await resp.text()
-            try:
-                decoded = base64.b64decode(text_data.strip()).decode("utf-8", errors="ignore")
-                return decoded.splitlines()
-            except Exception:
-                return text_data.splitlines()
-    except Exception:
-        return []
-
-
-async def fetch_telegram_channel(session: aiohttp.ClientSession, channel: str) -> list[str]:
-    url = f"https://t.me/s/{channel}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status != 200:
-                return []
-            body = html.unescape(await resp.text())
-            return re.findall(r"(?:vless|hy2|hysteria2)://[^\s<\"'#]+", body)
-    except Exception:
-        return []
-
-
-async def update_proxies_task():
-    logger.info("[Collector] Поиск RU Relay и серверов под белые списки...")
-    candidates = {}
-
-    async with aiohttp.ClientSession() as session:
-        wl_tasks = [fetch_feed(session, url) for url in RU_WHITELIST_SOURCES]
-        for res in await asyncio.gather(*wl_tasks, return_exceptions=True):
-            if isinstance(res, list):
-                for line in res:
-                    meta = parse_proxy_uri(line, source_type="whitelist")
-                    if meta and meta["uri"] not in candidates:
-                        candidates[meta["uri"]] = meta
-
-        tg_tasks = [fetch_telegram_channel(session, ch) for ch in TELEGRAM_CHANNELS]
-        for res in await asyncio.gather(*tg_tasks, return_exceptions=True):
-            if isinstance(res, list):
-                for line in res:
-                    meta = parse_proxy_uri(line, source_type="tg")
-                    if meta and meta["uri"] not in candidates:
-                        candidates[meta["uri"]] = meta
-
-    candidates_list = list(candidates.values())
-    if not candidates_list:
-        logger.warning("[Collector] Новые узлы не получены, пул сохранен.")
-        return
-
-    candidates_list.sort(key=lambda x: (x["tier"], 0 if x["net_type"] == "tcp" else 1))
-    top_servers = candidates_list[:30]
-
-    async with AsyncSessionLocal() as db_session:
-        await db_session.execute(delete(ProxyServer))
-        for item in top_servers:
-            srv = ProxyServer(uri=item["uri"], protocol=item["scheme"], tier=item["tier"])
-            db_session.add(srv)
-        await db_session.commit()
-
-    logger.info(f"[Collector] Успешно сохранено {len(top_servers)} серверов.")
+async def get_or_create_user(session: AsyncSession, tg_user: types.User) -> User:
+    """
+    Аутентификация Telegram-пользователя на Railway.
+    Строгая привязка telegram_id к уникальной изолированной записи.
+    """
+    res = await session.execute(select(User).where(User.telegram_id == tg_user.id))
+    user = res.scalar_one_or_none()
+    if not user:
+        user = User(
+            telegram_id=tg_user.id,
+            username=tg_user.username or "",
+            first_name=tg_user.first_name or "",
+            sub_token=generate_secure_token(),
+            is_active=1,
+            created_at=datetime.utcnow(),
+            last_seen_at=datetime.utcnow(),
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        logger.info(f"[Auth] Зарегистрирован новый пользователь ID={tg_user.id} (@{tg_user.username})")
+    else:
+        # Обновляем метаданные и отметку активности
+        user.last_seen_at = datetime.utcnow()
+        if tg_user.username and user.username != tg_user.username:
+            user.username = tg_user.username
+        if tg_user.first_name and user.first_name != tg_user.first_name:
+            user.first_name = tg_user.first_name
+        await session.commit()
+    return user
 
 
 router = Router()
 
 
-def get_main_keyboard(sub_token: str) -> InlineKeyboardBuilder:
+def build_main_menu(sub_token: str) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (iOS / Android)", url=f"{APP_URL}/open/happ?token={sub_token}"))
     kb.row(
-        types.InlineKeyboardButton(text="📱 v2rayNG (Android)", url=f"{APP_URL}/open/v2rayng?token={sub_token}"),
-        types.InlineKeyboardButton(text="⚡ Hiddify (ПК / Android)", url=f"{APP_URL}/open/hiddify?token={sub_token}")
+        types.InlineKeyboardButton(text="🍏 iOS (iPhone / iPad)", callback_data="guide_ios"),
+        types.InlineKeyboardButton(text="🤖 Android", callback_data="guide_android"),
     )
-    kb.row(types.InlineKeyboardButton(text="✈️ Подключить MTProxy (Telegram)", url=MTPROTO_HTTP_LINK))
     kb.row(
-        types.InlineKeyboardButton(text="🌐 Страница подписки", url=f"{APP_URL}/sub/{sub_token}"),
-        types.InlineKeyboardButton(text="ℹ️ Инструкция", callback_data="help_info")
+        types.InlineKeyboardButton(text="💻 Windows / Mac", callback_data="guide_pc"),
+        types.InlineKeyboardButton(text="✈️ MTProto (Telegram)", url=MTPROTO_HTTP_LINK),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=f"{APP_URL}/sub/{sub_token}"),
+        types.InlineKeyboardButton(text="🔄 Сбросить ссылку", callback_data="reset_prompt"),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="❓ О сервисе и защите от блокировок", callback_data="info_service")
     )
     return kb
 
 
-def get_welcome_text(sub_link: str) -> str:
+def make_welcome_text(user: User, sub_link: str) -> str:
+    name_display = html.escape(user.first_name or "друг")
     return (
-        "🌐 <b>Добро пожаловать в NoVPN</b>\n\n"
-        "Сервис настроен на обход блокировок ТСПУ и DPI через VLESS Reality и Fake-TLS.\n\n"
-        "<b>Доступные режимы:</b>\n"
-        "• <b>VPN (Весь интернет):</b> Амстердамский кластер (1 Гбит/с, BBR) с маскировкой под российские корпоративные ресурсы.\n"
-        "• <b>MTProto Proxy:</b> прямое подключение Telegram в один клик без сторонних программ.\n\n"
-        "🔗 <b>Ваша ссылка на подписку:</b>\n"
+        f"👋 <b>Привет, {name_display}!</b>\n\n"
+        "Добро пожаловать в <b>NoVPN</b> — высокоскоростной сервис для свободного доступа в сеть в условиях жестких блокировок ТСПУ и DPI.\n\n"
+        "🛡️ <b>Ваш статус:</b> <code>🟢 Активна (Безлимит)</code>\n"
+        f"🆔 <b>Telegram ID:</b> <code>{user.telegram_id}</code>\n"
+        f"🔄 <b>Синхронизаций:</b> <code>{user.sub_sync_count or 0}</code>\n\n"
+        "🔗 <b>Ваша персональная ссылка подписки:</b>\n"
         f"<code>{sub_link}</code>\n\n"
-        "<i>Нажмите кнопку ниже для быстрого импорта:</i>"
+        "<i>Выберите вашу платформу ниже для быстрой настройки в один клик:</i>"
     )
 
 
 @router.message(CommandStart())
 async def start_handler(message: types.Message):
-    user_id = message.from_user.id
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User).where(User.telegram_id == user_id))
-        user = res.scalar_one_or_none()
-        if not user:
-            user = User(telegram_id=user_id)
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
+        user = await get_or_create_user(session, message.from_user)
+        if not user.is_active:
+            await message.answer("⛔ <b>Доступ ограничен.</b> Ваш аккаунт деактивирован администратором.", parse_mode=ParseMode.HTML)
+            return
 
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
-    kb = get_main_keyboard(user.sub_token)
-    msg = get_welcome_text(sub_link)
-    await message.answer(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    kb = build_main_menu(user.sub_token)
+    welcome_text = make_welcome_text(user, sub_link)
+    await message.answer(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
 
 
-@router.callback_query(F.data == "help_info")
-async def help_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
+@router.callback_query(F.data == "main_menu")
+async def callback_main_menu(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User).where(User.telegram_id == user_id))
-        user = res.scalar_one_or_none()
-        token = user.sub_token if user else ""
+        user = await get_or_create_user(session, callback.from_user)
+        if not user.is_active:
+            await callback.answer("⛔ Доступ ограничен.", show_alert=True)
+            return
 
-    text_info = (
-        "📖 <b>Инструкция по настройке NoVPN:</b>\n\n"
-        "<b>1. Полный интернет (VPN):</b>\n"
-        "• <b>iOS (iPhone):</b> установите <b>Happ</b> или <b>Streisand</b> из App Store, нажмите кнопку «Добавить в Happ».\n"
-        "• <b>Android:</b> установите <b>Happ</b>, <b>v2rayNG</b> или <b>Hiddify</b>.\n"
-        "• <b>Windows / Mac:</b> используйте <b>Hiddify</b> или <b>v2rayN</b>.\n\n"
-        "💡 <b>Рекомендация:</b> включите в приложении режим <i>Bypass Russian Federation</i> (раздельное туннелирование). "
-        "В этом случае банки, Госуслуги и маркетплейсы будут работать напрямую на полной скорости, "
-        "а YouTube, Instagram и заблокированные ресурсы — через наш сервер в Амстердаме.\n\n"
-        "<b>2. Только Telegram:</b>\n"
-        "Нажмите кнопку «Подключить MTProxy» — мессенджер подключится через зашифрованный Fake-TLS мост без установки приложений."
-    )
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🔙 Назад к ссылке", callback_data=f"back_main:{token}"))
-    await callback.message.edit_text(text=text_info, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    sub_link = f"{APP_URL}/sub/{user.sub_token}"
+    kb = build_main_menu(user.sub_token)
+    welcome_text = make_welcome_text(user, sub_link)
+    await callback.message.edit_text(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("back_main:"))
-async def back_main_callback(callback: types.CallbackQuery):
-    token = callback.data.split(":", 1)[1]
+@router.callback_query(F.data == "guide_ios")
+async def callback_guide_ios(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        user = await get_or_create_user(session, callback.from_user)
+
+    token = user.sub_token
+    text_content = (
+        "🍏 <b>Настройка NoVPN на Apple iOS (iPhone / iPad)</b>\n\n"
+        "Для работы рекомендуется приложение <b>Happ</b> (или <b>Streisand</b>):\n\n"
+        "1️⃣ Установите <b>Happ</b> или <b>Streisand</b> из App Store.\n"
+        "2️⃣ Нажмите кнопку <b>«🚀 Добавить в Happ»</b> или <b>«⚡ Добавить в Streisand»</b> ниже — профиль добавится автоматически.\n"
+        "3️⃣ Включите туннель переключателем в приложении.\n\n"
+        "💡 <b>Рекомендация:</b> включите в приложении режим <i>«Bypass Russian Federation»</i> (раздельное туннелирование). "
+        "В этом случае банки, Госуслуги и Ozon продолжат работать напрямую без задержек, "
+        "а YouTube, Instagram и заблокированные сайты пойдут через наш гигабитный кластер в Амстердаме."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (1 клик)", url=f"{APP_URL}/open/happ?token={token}"))
+    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Streisand (1 клик)", url=f"{APP_URL}/open/streisand?token={token}"))
+    kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
+    await callback.message.edit_text(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "guide_android")
+async def callback_guide_android(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        user = await get_or_create_user(session, callback.from_user)
+
+    token = user.sub_token
+    text_content = (
+        "🤖 <b>Настройка NoVPN на Android</b>\n\n"
+        "Поддерживаются любые клиенты с протоколом VLESS Reality:\n\n"
+        "1️⃣ Установите <b>v2rayNG</b>, <b>Happ</b> или <b>Hiddify</b> из Google Play.\n"
+        "2️⃣ Нажмите кнопку импорта ниже — конфигурация загрузится в одно касание.\n"
+        "3️⃣ В настройках приложения выберите режим <i>«Обходить локальную сеть и РФ»</i>.\n"
+        "4️⃣ Запустите подключение."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="📱 Добавить в v2rayNG (1 клик)", url=f"{APP_URL}/open/v2rayng?token={token}"))
+    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (1 клик)", url=f"{APP_URL}/open/happ?token={token}"))
+    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Hiddify (1 клик)", url=f"{APP_URL}/open/hiddify?token={token}"))
+    kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
+    await callback.message.edit_text(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "guide_pc")
+async def callback_guide_pc(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        user = await get_or_create_user(session, callback.from_user)
+
+    token = user.sub_token
     sub_link = f"{APP_URL}/sub/{token}"
-    kb = get_main_keyboard(token)
-    msg = get_welcome_text(sub_link)
-    await callback.message.edit_text(text=msg, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    text_content = (
+        "💻 <b>Настройка NoVPN на Windows / macOS / Linux</b>\n\n"
+        "Рекомендуемый клиент: <b>Hiddify</b> (или <b>v2rayN</b>):\n\n"
+        "1️⃣ Скачайте <b>Hiddify</b> с официального сайта или GitHub.\n"
+        "2️⃣ Нажмите <b>«⚡ Добавить в Hiddify»</b> или вручную вставьте вашу ссылку:\n"
+        f"<code>{sub_link}</code>\n"
+        "3️⃣ Переключите режим проксирования в <i>VPN Mode</i>.\n"
+        "4️⃣ Нажмите кнопку Connect."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Hiddify", url=f"{APP_URL}/open/hiddify?token={token}"))
+    kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
+    await callback.message.edit_text(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "reset_prompt")
+async def callback_reset_prompt(callback: types.CallbackQuery):
+    text_content = (
+        "⚠️ <b>Перевыпуск персональной ссылки</b>\n\n"
+        "Вы действительно хотите сбросить текущую ссылку подписки?\n\n"
+        "• Старая ссылка будет мгновенно аннулирована.\n"
+        "• Все подключенные ранее устройства перестанут синхронизироваться.\n"
+        "• Вам будет выдан новый уникальный ключ.\n\n"
+        "<i>Используйте эту функцию, если вы случайно отправили ссылку посторонним или в публичный чат.</i>"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="✅ Да, перевыпустить ключ", callback_data="do_reset_token"),
+        types.InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")
+    )
+    await callback.message.edit_text(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "do_reset_token")
+async def callback_do_reset_token(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+        user = res.scalar_one_or_none()
+        if not user:
+            await callback.answer("Ошибка: пользователь не найден.", show_alert=True)
+            return
+
+        # Генерируем новый криптографический токен и обновляем в базе
+        new_token = generate_secure_token()
+        user.sub_token = new_token
+        user.last_seen_at = datetime.utcnow()
+        await session.commit()
+        await session.refresh(user)
+        logger.info(f"[Security] Пользователь ID={user.telegram_id} перевыпустил токен подписки.")
+
+    new_sub_link = f"{APP_URL}/sub/{new_token}"
+    text_content = (
+        "✅ <b>Ключ подписки успешно обновлен!</b>\n\n"
+        "Предыдущая ссылка аннулирована и больше не действует. Ваша новая ссылка:\n"
+        f"<code>{new_sub_link}</code>\n\n"
+        "<i>Обновите подписку в ваших приложениях с помощью кнопок ниже:</i>"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (iOS)", url=f"{APP_URL}/open/happ?token={new_token}"))
+    kb.row(types.InlineKeyboardButton(text="📱 Добавить в v2rayNG (Android)", url=f"{APP_URL}/open/v2rayng?token={new_token}"))
+    kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
+    await callback.message.edit_text(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer("Ссылка успешно обновлена!", show_alert=True)
+
+
+@router.callback_query(F.data == "info_service")
+async def callback_info_service(callback: types.CallbackQuery):
+    text_content = (
+        "ℹ️ <b>О технологиях NoVPN</b>\n\n"
+        "• <b>VLESS Reality + XTLS-Vision:</b> весь трафик маскируется под легитимный TLS-трафик крупных российских корпоративных порталов (1C, X5 Group, Газета). ТСПУ видит лишь обычные зашифрованные сессии к разрешенным сайтам.\n"
+        "• <b>Амстердам 4K (1 Гбит/с):</b> высокопроизводительные ноды с алгоритмом BBR для просмотра YouTube в 4K/8K без задержек и буферизации.\n"
+        "• <b>Шлюзы РФ (L3 TSPU Bypass):</b> отечественные узлы (Smart Ape, SberCloud, TimeWeb) для обхода жестких белых списков и фильтраций провайдеров.\n"
+        "• <b>Международные релеи:</b> запасные маршруты в Европе и США с автоматическим мониторингом доступности и подбором минимального пинга.\n"
+        "• <b>MTProto Fake-TLS:</b> специальный прокси для Telegram с маскировкой под Яндекс — мгновенная передача фото, видео и звонков."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
+    await callback.message.edit_text(text=text_content, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
     await callback.answer()
 
 
 async def cron_loop():
+    """Фоновый таймер периодической синхронизации флота."""
     while True:
         try:
-            await update_proxies_task()
+            await sync_upstream_fleet()
         except Exception as e:
-            logger.error(f"[Collector Error] {e}")
-        await asyncio.sleep(1800)
+            logger.error(f"[Cron Error] {e}")
+        await asyncio.sleep(900)  # каждые 15 минут
 
 
 async def bot_polling_loop():
     if not BOT_TOKEN:
-        logger.error("[Bot] BOT_TOKEN не задан в переменных окружения!")
+        logger.error("[Bot] BOT_TOKEN не задан! Бот не сможет обрабатывать сообщения.")
         return
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("[Bot] Telegram-бот запущен и ожидает сообщений...")
+    logger.info("[Bot] Telegram-бот запущен и ожидает пользователей...")
 
     while True:
         try:
             await dp.start_polling(bot)
             break
         except TelegramConflictError:
-            logger.warning("[Bot] Конфликт сессий, повтор через 5 секунд...")
+            logger.warning("[Bot] Конфликт сессий бота (другой процесс слушает обновления). Ожидание 5 сек...")
             await asyncio.sleep(5)
         except Exception as e:
-            logger.error(f"[Bot Error] {e}")
+            logger.error(f"[Bot Polling Error] {e}")
             await asyncio.sleep(5)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Первичная синхронизация флота при старте приложения
+    await sync_upstream_fleet()
     c_task = asyncio.create_task(cron_loop())
     b_task = asyncio.create_task(bot_polling_loop())
     yield
@@ -387,7 +466,7 @@ async def lifespan(app: FastAPI):
     b_task.cancel()
 
 
-app = FastAPI(title="NoVPN Gateway", lifespan=lifespan)
+app = FastAPI(title="NoVPN Gateway & Auth Service", lifespan=lifespan)
 
 
 async def get_db():
@@ -395,44 +474,348 @@ async def get_db():
         yield session
 
 
+def render_web_landing(user: User, token: str) -> str:
+    """Генерация красивого адаптивного веб-портала NoVPN при открытии ссылки в браузере."""
+    sub_url = f"{APP_URL}/sub/{token}"
+    name = html.escape(user.first_name or user.username or "Пользователь")
+    tg_id = user.telegram_id
+    sync_count = user.sub_sync_count or 0
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NoVPN • Личный кабинет</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      background: #090d16;
+      color: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }}
+    .container {{
+      max-width: 460px;
+      width: 100%;
+      background: #111827;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 32px 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+      text-align: center;
+    }}
+    .badge-status {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }}
+    .pulse-dot {{
+      width: 8px;
+      height: 8px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 10px #10b981;
+    }}
+    h1 {{
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 6px;
+      color: #ffffff;
+    }}
+    .subtitle {{
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }}
+    .info-grid {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+      text-align: left;
+    }}
+    .info-card {{
+      background: #1e293b;
+      border-radius: 14px;
+      padding: 12px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }}
+    .info-card .label {{
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+    }}
+    .info-card .value {{
+      font-size: 14px;
+      font-weight: 700;
+      color: #f8fafc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .section-title {{
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #cbd5e1;
+      margin: 20px 0 12px;
+      text-align: left;
+    }}
+    .action-btn {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      background: #ffffff;
+      color: #000000;
+      font-weight: 700;
+      font-size: 15px;
+      padding: 14px 18px;
+      border-radius: 14px;
+      text-decoration: none;
+      margin-bottom: 10px;
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 12px rgba(255, 255, 255, 0.1);
+    }}
+    .action-btn:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);
+    }}
+    .action-btn.secondary {{
+      background: #1e293b;
+      color: #f1f5f9;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: none;
+    }}
+    .action-btn.secondary:hover {{
+      background: #334155;
+    }}
+    .action-btn.telegram {{
+      background: #0284c7;
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3);
+    }}
+    .link-box {{
+      position: relative;
+      background: #0b0f19;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #94a3b8;
+      word-break: break-all;
+      margin-top: 14px;
+      text-align: left;
+      cursor: pointer;
+    }}
+    .copy-hint {{
+      position: absolute;
+      right: 10px;
+      bottom: 8px;
+      font-family: sans-serif;
+      font-size: 11px;
+      color: #38bdf8;
+      font-weight: 600;
+    }}
+    .toast {{
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #10b981;
+      color: #ffffff;
+      padding: 12px 24px;
+      border-radius: 30px;
+      font-weight: 700;
+      font-size: 14px;
+      box-shadow: 0 10px 25px rgba(16, 185, 129, 0.4);
+      opacity: 0;
+      transition: all 0.3s ease;
+      z-index: 100;
+    }}
+    .toast.show {{
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }}
+    footer {{
+      margin-top: 24px;
+      font-size: 12px;
+      color: #64748b;
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="badge-status">
+      <div class="pulse-dot"></div>
+      Подписка активна • Безлимит
+    </div>
+    <h1>NoVPN Cloud</h1>
+    <div class="subtitle">Персональный шлюз с защитой от блокировок ТСПУ</div>
+
+    <div class="info-grid">
+      <div class="info-card">
+        <div class="label">Пользователь</div>
+        <div class="value">{name}</div>
+      </div>
+      <div class="info-card">
+        <div class="label">Синхронизаций</div>
+        <div class="value">{sync_count} раз</div>
+      </div>
+    </div>
+
+    <div class="section-title">Быстрое подключение (1 клик)</div>
+    <a href="{APP_URL}/open/happ?token={token}" class="action-btn">
+      🚀 Добавить в Happ (iOS / Android)
+    </a>
+    <a href="{APP_URL}/open/v2rayng?token={token}" class="action-btn secondary">
+      📱 Добавить в v2rayNG (Android)
+    </a>
+    <a href="{APP_URL}/open/streisand?token={token}" class="action-btn secondary">
+      ⚡ Добавить в Streisand (iOS / macOS)
+    </a>
+    <a href="{APP_URL}/open/hiddify?token={token}" class="action-btn secondary">
+      💻 Добавить в Hiddify (ПК / Mac)
+    </a>
+    <a href="{MTPROTO_HTTP_LINK}" class="action-btn telegram">
+      ✈️ Telegram MTProto (в 1 клик)
+    </a>
+
+    <div class="section-title">Ссылка подписки</div>
+    <div class="link-box" onclick="copyLink()">
+      {sub_url}
+      <div class="copy-hint" id="copyText">📋 Копировать</div>
+    </div>
+
+    <div style="margin-top: 14px;">
+      <a href="{sub_url}?raw=1" style="color: #64748b; font-size: 13px; text-decoration: underline;">
+        Скачать текстовый файл конфигурации (.txt)
+      </a>
+    </div>
+
+    <footer>
+      novpn cluster • XTLS-Vision + Reality • Amsterdam 1G
+    </footer>
+  </div>
+
+  <div class="toast" id="toast">✅ Ссылка скопирована в буфер обмена!</div>
+
+  <script>
+    function copyLink() {{
+      const link = "{sub_url}";
+      navigator.clipboard.writeText(link).then(() => {{
+        const toast = document.getElementById("toast");
+        toast.classList.add("show");
+        document.getElementById("copyText").innerText = "Скопировано!";
+        setTimeout(() => {{
+          toast.classList.remove("show");
+          document.getElementById("copyText").innerText = "📋 Копировать";
+        }}, 2500);
+      }}).catch(() => {{
+        prompt("Скопируйте ссылку:", link);
+      }});
+    }}
+  </script>
+</body>
+</html>"""
+
+
 @app.get("/")
 async def root():
-    return {"status": "online", "service": "NoVPN", "app_url": APP_URL}
+    return {
+        "status": "online",
+        "service": "NoVPN",
+        "app_url": APP_URL,
+        "active_fleet_nodes": len(current_fleet_nodes),
+    }
 
 
 @app.get("/sub/{token}")
-async def get_subscription(token: str, db: AsyncSession = Depends(get_db)):
+async def get_subscription(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Основной шлюз выдачи подписки.
+    Строгая аутентификация пользователя по token.
+    Если запрос из веб-браузера — отображает красивый личный кабинет.
+    Если запрос из VPN-клиента — отдает Base64 со списком серверов.
+    """
     user_res = await db.execute(select(User).where(User.sub_token == token))
     user = user_res.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="Token not found")
+        raise HTTPException(status_code=404, detail="Subscription token not found or revoked")
 
-    servers_res = await db.execute(
-        select(ProxyServer).order_by(ProxyServer.tier.asc()).limit(30)
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Subscription is suspended")
+
+    # Обновляем метрику использования
+    user.last_sub_sync = datetime.utcnow()
+    user.sub_sync_count = (user.sub_sync_count or 0) + 1
+    await db.commit()
+
+    user_agent = request.headers.get("User-Agent", "").lower()
+    accept_header = request.headers.get("Accept", "").lower()
+    raw_param = request.query_params.get("raw", "")
+
+    # Определение: это браузер человека или VPN-клиент?
+    vpn_clients = (
+        "happ", "v2ray", "hiddify", "sing-box", "shadowrocket",
+        "nekobox", "karing", "streisand", "clash", "loon", "surge",
+        "flclash", "foxray", "wireguard", "leaf", "dart"
     )
-    db_servers = servers_res.scalars().all()
+    is_vpn_client = any(k in user_agent for k in vpn_clients)
+    force_raw = raw_param == "1"
+    is_browser = ("text/html" in accept_header or "mozilla" in user_agent or "safari" in user_agent or "chrome" in user_agent) and not is_vpn_client and not force_raw
 
-    # Формируем итоговый список: сначала наши 4 выделенных амстердамских узла, затем резервный пул
-    all_uris = list(DEDICATED_NODES)
-    seen = set(all_uris)
-    for srv in db_servers:
-        if srv.uri not in seen:
-            all_uris.append(srv.uri)
-            seen.add(srv.uri)
+    if is_browser:
+        html_page = render_web_landing(user, token)
+        return HTMLResponse(content=html_page, status_code=200)
 
-    raw_payload = "\n".join(all_uris)
+    # Формируем список серверов
+    nodes = list(current_fleet_nodes) if current_fleet_nodes else list(DEDICATED_NODES)
+    raw_payload = "\n".join(nodes)
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
     headers = {
         "Profile-Title": "novpn",
-        "profile-update-interval": "6",
-        "content-disposition": 'attachment; filename="novpn.txt"; filename*=UTF-8\'\'novpn',
+        "Profile-Update-Interval": "6",
+        "Subscription-Userinfo": "upload=0; download=0; total=0; expire=1893456000",
+        "Content-Disposition": 'attachment; filename="novpn.txt"; filename*=UTF-8\'\'novpn',
     }
     return Response(content=encoded, media_type="text/plain; charset=utf-8", headers=headers)
 
 
 @app.get("/open/{client}")
-async def redirect_to_client(client: str, token: str):
+async def redirect_to_client(client: str, token: str, db: AsyncSession = Depends(get_db)):
+    """Безопасный 1-клик редирект в мобильные приложения с валидацией токена."""
+    user_res = await db.execute(select(User).where(User.sub_token == token))
+    user = user_res.scalar_one_or_none()
+    if not user:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><body style='background:#0b0f19;color:#fff;text-align:center;padding:50px;font-family:sans-serif;'>"
+            "<h2>⚠️ Ссылка недействительна</h2><p>Пожалуйста, перейдите в Telegram-бот и получите актуальную ссылку.</p>"
+            "</body></html>",
+            status_code=404,
+        )
+
     sub_url = f"{APP_URL}/sub/{token}"
     if client == "happ":
         target = f"happ://add/{sub_url}"
@@ -455,8 +838,8 @@ async def redirect_to_client(client: str, token: str):
     <meta http-equiv="refresh" content="0; url={target}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-      body {{ margin: 0; padding: 0; background: #0b0f19; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
-      .card {{ background: #131b2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 28px; max-width: 380px; width: 90%; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }}
+      body {{ margin: 0; padding: 0; background: #090d16; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
+      .card {{ background: #111827; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 28px; max-width: 380px; width: 90%; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }}
       .logo {{ font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 8px; }}
       .desc {{ color: #94a3b8; font-size: 14px; margin-bottom: 28px; line-height: 1.5; }}
       .btn {{ display: block; background: #ffffff; color: #000000; font-weight: 700; font-size: 16px; padding: 14px 20px; border-radius: 12px; text-decoration: none; transition: transform 0.15s ease; }}
