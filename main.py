@@ -16,7 +16,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramConflictError
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy import BigInteger, Column, DateTime, Integer, String, delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -54,97 +54,28 @@ def make_banner(text):
 # Собственный кластер Амстердам (VLESS Reality + XTLS-Vision)
 DEDICATED_NODES = [
     make_banner("⚡ ─ [ амстердам • 4k ] ─"),
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
-    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=safari&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=faster.lizeg.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
+    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=www.gazeta-business.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
     make_banner("🛡️ ─ [ шлюзы рф • 25ms ] ─"),
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Smart%20Ape%20%28L3%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20SberCloud",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=ads.x5.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28Fast%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28Fast%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@217.199.254.18:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=keycdn.com&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28LTE%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28gRPC%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=ads.x5.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28X5%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=gazeta-business.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28X5%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@91.240.86.30:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20JSC%20IOT",
     make_banner("🌍 ─ [ резерв • ес / сша ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.rich-river.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20Relay%20%E2%80%A2%20Germany%20%28KeyCDN%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@95.217.218.171:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%AB%F0%9F%87%AE%20Relay%20%E2%80%A2%20Finland%20%28Direct%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.rare-frost.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=gb.lizeg.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AC%F0%9F%87%A7%20Relay%20%E2%80%A2%20United%20Kingdom",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.gold-pond.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=fr.cdn-tech-images.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%B7%20Relay%20%E2%80%A2%20France%20%28Paris%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.mint-lance.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=us.cdn-tech-images.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%BA%F0%9F%87%B8%20Relay%20%E2%80%A2%20United%20States",
-] ─"),
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
-    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=safari&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
-    make_banner("🛡️ ─ [ шлюзы рф • 25ms ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Smart%20Ape%20%28L3%20Bypass%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=keycdn.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20SberCloud%20Ingress",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@109.172.79.89:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=est-res.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20JSC%20IOT%20Ingress",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=ads.x5.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28X5%20Group%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=gazeta-business.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28gRPC%20Ingress%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.124:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=gazeta-business.ru&fp=firefox&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28Alternate%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@217.199.254.18:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=keycdn.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28LTE%20Shield%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=ads.x5.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28Fast%20Ingress%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@185.129.100.235:443?encryption=mlkem768x25519plus.native.0rtt.v-7SQRHD1uQ1dFudMkXoGqHrisnsnYjzICLWmc3l1iY.lvV9jnuFV8xkhxwDmGQOWHEHyepeTsN4YkHDWQTIN6I6uxkufqgnC-rEZICW6SgltNO2FjanZLepI4iosvaDl0teXhGnZEEJpWN0PWspNvtWCuRsQfA4MvnE_XcMabIcunASPtV2jhVXFsvNZTkM31hSLwFvSdGet3YShvJS7pmkddiAXmiyghiSCwvBpsB0uRIpFPgrx0mTtYe7gbG08hKoGveHq4lfDRUX-ImV3nqLmmKCU3GU7ZOSbhQs_ZwZ7UkEREXN2dESt8Qz4YFw3WifW3utOiF70xqO5TZ0EShHqNFms7elmzlhtEEkbfbAAvWbt3ab93pQSAgGYNsIiHgJc2F1CmgzWpA2p7uFSpqBpZE_HhxE4qA2gEFDT2lV8OyF4QtJ88PCkFqIGXEXn1SfHEGOESG6YIa31xI6pflx56EnizqlqEfDTHWTiCUQA1qjsShvhcq_FaJTthRXOmElOAcQc-e4NfK5vlkcroPIqIYnkccaXlsWw1Sa48pOc0U1N6GmMtB3WeoJtygap_elcISRPZq15Thj1eGP_0BRjfQe9RaYz6Qj8Sl2L2JrrvRElpYPq4qGNUvAHjBJBzWmzrU70tfPTLdyddE3OrAjOOJBYkhzVewlzsxBTWikZPsrrXhpk0QeuctIBHjJiHgLRxurlaN3t8ZRMhyi1PlQgPQX1ZtMqmaCDaRn8QFn1WlJgCoLIFZv_MMOvbJFcWx5OeSXsLxokEmoZtsYOWjDdggcqTtNgXpM1wuj7-eIq4xzjlccIeig43fK-7JLcQESVasA_EA-Kyx-jIkyl6FEoxhM5EJMEwt9-7wB6Hi6vTJRDVmJLQDHlxqTS3haAOcLZxI7ooCjuUmKh3Oyedx1HVHA0lBKl_YwdFMYApwWmHklSTQnHAItPUtTw7vNIEFBygStijW4Z6CpnuFGdlGkzdkiaLw-1Ea4MRO3tISScXAXGlmOLIhOlrSk04I5H1OApehNv1IS1PYkMzYSUJUCMGRk5XC7RVh32MhdSjKALDU2tcJjSHk2cGpKhPuBELFhvLpoYEl9A4C4OMnJkCKi22qMuikbA0kUrLBH50M1_6G_7rJFAgtLP-mU6JnOw4kVWUDE_Mly62Mr07ys1BUIl8edGzI8PYSzIpx_tvF6twF6QTUX65d2hSsezLQ3uIFtgfYgIKWZUuN7UqHG4_YPVZxLhAAlUwuEqYeh49ZjTbsMZDxSCiigMsWidpmIqjJkTdHD0iS2WpoDv0qUPZpIwoUNznU9iDRxPfQgSkuSONOiEiMq16K9yPy2z_CM-JFtnHJ6TpFKbjGZJ9dBPIFEapCOxeBgaANmA2nMfXdu1vRAy8ZbayYHSNhL1rBEC2N-5JZkfKQ7X9FEpKGk2-E2vwuNbxYc4jYeQtlUKNK7F7MTiFx2UXLMiqAU3fYsAXYxSgMG1RpzLthre-YngMTK5ioK4HEBHFYu39cp9KRnqbcGZfWvUdYzUmypQbYR4iQtH4U0YhXHnfV_cPkNowo70xOTluMFXTBQP9cRz0I0JVpD1z-0eXl-JU7ncW_9g3FSl9Fi5nxzklkhj4SGKwc&type=ws&path=%2Fvideos%2Fk.mp4&host=metrics.pc-club.app&security=tls&sni=metrics.pc-club.app&fp=chrome&alpn=http%2F1.1#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20DDoS-Guard%20Ingress",
-    make_banner("🌍 ─ [ резерв • ес / сша ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.firm-maple.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=de.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Banatsync%20%28Germany%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.neat-vault.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=quick.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B8%F0%9F%87%AA%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28Sweden%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.soft-tiger.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=quick-fi.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AB%F0%9F%87%AE%20novpn%20%E2%80%A2%20Banatsync%20%28Finland%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.dusk-stone.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=cdn-ru.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AA%F0%9F%87%AA%20novpn%20%E2%80%A2%20Rocket%20%28Estonia%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.fox-eagle.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=li.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B1%F0%9F%87%B9%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28Lithuania%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.oak-blaze.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=tr.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B9%F0%9F%87%B7%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28Turkey%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.mint-lance.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=us.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%BA%F0%9F%87%B8%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28USA%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.gold-pond.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=fr.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AB%F0%9F%87%B7%20novpn%20%E2%80%A2%20TakeHost%20%28France%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.rare-frost.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=gb.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AC%F0%9F%87%A7%20novpn%20%E2%80%A2%20Banatsync%20%28UK%29",
-] ─"),
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
-    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=safari&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
-    make_banner("🛡️ ─ [ шлюзы рф • 25ms ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Smart%20Ape%20%28L3%20Bypass%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=keycdn.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20SberCloud%20Ingress",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@109.172.79.89:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=est-res.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20JSC%20IOT%20Ingress",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=ads.x5.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28X5%20Group%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=gazeta-business.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28gRPC%20Ingress%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.124:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=gazeta-business.ru&fp=firefox&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28Alternate%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@217.199.254.18:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=keycdn.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28LTE%20Shield%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?encryption=none&type=grpc&serviceName=ads.x5.ru&mode=gun&security=reality&sni=ads.x5.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28Fast%20Ingress%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@185.129.100.235:443?encryption=mlkem768x25519plus.native.0rtt.v-7SQRHD1uQ1dFudMkXoGqHrisnsnYjzICLWmc3l1iY.lvV9jnuFV8xkhxwDmGQOWHEHyepeTsN4YkHDWQTIN6I6uxkufqgnC-rEZICW6SgltNO2FjanZLepI4iosvaDl0teXhGnZEEJpWN0PWspNvtWCuRsQfA4MvnE_XcMabIcunASPtV2jhVXFsvNZTkM31hSLwFvSdGet3YShvJS7pmkddiAXmiyghiSCwvBpsB0uRIpFPgrx0mTtYe7gbG08hKoGveHq4lfDRUX-ImV3nqLmmKCU3GU7ZOSbhQs_ZwZ7UkEREXN2dESt8Qz4YFw3WifW3utOiF70xqO5TZ0EShHqNFms7elmzlhtEEkbfbAAvWbt3ab93pQSAgGYNsIiHgJc2F1CmgzWpA2p7uFSpqBpZE_HhxE4qA2gEFDT2lV8OyF4QtJ88PCkFqIGXEXn1SfHEGOESG6YIa31xI6pflx56EnizqlqEfDTHWTiCUQA1qjsShvhcq_FaJTthRXOmElOAcQc-e4NfK5vlkcroPIqIYnkccaXlsWw1Sa48pOc0U1N6GmMtB3WeoJtygap_elcISRPZq15Thj1eGP_0BRjfQe9RaYz6Qj8Sl2L2JrrvRElpYPq4qGNUvAHjBJBzWmzrU70tfPTLdyddE3OrAjOOJBYkhzVewlzsxBTWikZPsrrXhpk0QeuctIBHjJiHgLRxurlaN3t8ZRMhyi1PlQgPQX1ZtMqmaCDaRn8QFn1WlJgCoLIFZv_MMOvbJFcWx5OeSXsLxokEmoZtsYOWjDdggcqTtNgXpM1wuj7-eIq4xzjlccIeig43fK-7JLcQESVasA_EA-Kyx-jIkyl6FEoxhM5EJMEwt9-7wB6Hi6vTJRDVmJLQDHlxqTS3haAOcLZxI7ooCjuUmKh3Oyedx1HVHA0lBKl_YwdFMYApwWmHklSTQnHAItPUtTw7vNIEFBygStijW4Z6CpnuFGdlGkzdkiaLw-1Ea4MRO3tISScXAXGlmOLIhOlrSk04I5H1OApehNv1IS1PYkMzYSUJUCMGRk5XC7RVh32MhdSjKALDU2tcJjSHk2cGpKhPuBELFhvLpoYEl9A4C4OMnJkCKi22qMuikbA0kUrLBH50M1_6G_7rJFAgtLP-mU6JnOw4kVWUDE_Mly62Mr07ys1BUIl8edGzI8PYSzIpx_tvF6twF6QTUX65d2hSsezLQ3uIFtgfYgIKWZUuN7UqHG4_YPVZxLhAAlUwuEqYeh49ZjTbsMZDxSCiigMsWidpmIqjJkTdHD0iS2WpoDv0qUPZpIwoUNznU9iDRxPfQgSkuSONOiEiMq16K9yPy2z_CM-JFtnHJ6TpFKbjGZJ9dBPIFEapCOxeBgaANmA2nMfXdu1vRAy8ZbayYHSNhL1rBEC2N-5JZkfKQ7X9FEpKGk2-E2vwuNbxYc4jYeQtlUKNK7F7MTiFx2UXLMiqAU3fYsAXYxSgMG1RpzLthre-YngMTK5ioK4HEBHFYu39cp9KRnqbcGZfWvUdYzUmypQbYR4iQtH4U0YhXHnfV_cPkNowo70xOTluMFXTBQP9cRz0I0JVpD1z-0eXl-JU7ncW_9g3FSl9Fi5nxzklkhj4SGKwc&type=ws&path=%2Fvideos%2Fk.mp4&host=metrics.pc-club.app&security=tls&sni=metrics.pc-club.app&fp=chrome&alpn=http%2F1.1#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20DDoS-Guard%20Ingress",
-    make_banner("🌍 ─ [ резерв • ес / сша ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.firm-maple.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=de.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Banatsync%20%28Germany%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.neat-vault.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=quick.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B8%F0%9F%87%AA%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28Sweden%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.soft-tiger.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=quick-fi.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AB%F0%9F%87%AE%20novpn%20%E2%80%A2%20Banatsync%20%28Finland%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.dusk-stone.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=cdn-ru.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AA%F0%9F%87%AA%20novpn%20%E2%80%A2%20Rocket%20%28Estonia%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.fox-eagle.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=li.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B1%F0%9F%87%B9%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28Lithuania%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.oak-blaze.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=tr.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%B9%F0%9F%87%B7%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28Turkey%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.mint-lance.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=us.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%BA%F0%9F%87%B8%20novpn%20%E2%80%A2%20VPSUS%20LTD%20%28USA%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.gold-pond.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=fr.cdn-tech-images.com&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AB%F0%9F%87%B7%20novpn%20%E2%80%A2%20TakeHost%20%28France%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.rare-frost.test-cdn-kkk.com:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=gb.lizeg.ru&fp=qq&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&sid=50#%F0%9F%87%AC%F0%9F%87%A7%20novpn%20%E2%80%A2%20Banatsync%20%28UK%29",
-] ─"),
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
-    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=ads.x5.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=safari&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
-    make_banner("🛡️ ─ [ шлюзы рф • 25ms ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Smart%20Ape%20%28L3%20Bypass%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20National%20Ingress%20%28VK%20Cloud%20gRPC%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20National%20Ingress%20%28SberCloud%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=ads.x5.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20National%20Ingress%20%28VK%20Cloud%20X5%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@91.240.86.30:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20National%20Ingress%20%28JSC%20IOT%20gRPC%29",
-    make_banner("🌍 ─ [ резерв • ес / сша ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.rich-river.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20Relay%20%E2%80%A2%20Germany%20%28KeyCDN%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@95.217.218.171:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%AB%F0%9F%87%AE%20Relay%20%E2%80%A2%20Finland%20%28Direct%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.rare-frost.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=gb.lizeg.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AC%F0%9F%87%A7%20Relay%20%E2%80%A2%20United%20Kingdom",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.gold-pond.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=fr.cdn-tech-images.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%B7%20Relay%20%E2%80%A2%20France%20%28Paris%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@test.mint-lance.test-cdn-kkk.com:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=us.cdn-tech-images.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%BA%F0%9F%87%B8%20Relay%20%E2%80%A2%20United%20States"
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@152.53.236.22:443?security=reality&encryption=none&pbk=7_3QW1h6XgI2rZ9bI_d8b3h7Z7n_u9X0&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20Relay%20%E2%80%A2%20Germany",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@212.87.222.10:8443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.nokia.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%AE%20Relay%20%E2%80%A2%20Finland",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@86.54.28.75:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.tradingview.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B3%F0%9F%87%B1%20Relay%20%E2%80%A2%20Netherlands",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@143.246.219.99:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.vodafone.co.uk&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AC%F0%9F%87%A7%20Relay%20%E2%80%A2%20United%20Kingdom",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@145.223.68.58:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%B7%20Relay%20%E2%80%A2%20France",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@93.89.220.37:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=ibm.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AA%F0%9F%87%AA%20Relay%20%E2%80%A2%20Estonia",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@169.40.42.168:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=yahoo.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%BA%F0%9F%87%B8%20Relay%20%E2%80%A2%20United%20States",
 ]
-
 # MTProto Proxy для быстрого подключения Telegram
 MTPROTO_LINK = "tg://proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
 MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
@@ -335,9 +266,15 @@ router = Router()
 def get_main_keyboard(sub_token: str) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="🚀 Добавить в Happ (iOS / Android)", url=f"{APP_URL}/open/happ?token={sub_token}"))
-    kb.row(types.InlineKeyboardButton(text="⚡ Добавить в Hiddify (PC / Android)", url=f"{APP_URL}/open/hiddify?token={sub_token}"))
-    kb.row(types.InlineKeyboardButton(text="✈️ Подключить MTProxy (Только Telegram)", url=MTPROTO_HTTP_LINK))
-    kb.row(types.InlineKeyboardButton(text="ℹ️ Инструкция по настройке", callback_data="help_info"))
+    kb.row(
+        types.InlineKeyboardButton(text="📱 v2rayNG (Android)", url=f"{APP_URL}/open/v2rayng?token={sub_token}"),
+        types.InlineKeyboardButton(text="⚡ Hiddify (ПК / Android)", url=f"{APP_URL}/open/hiddify?token={sub_token}")
+    )
+    kb.row(types.InlineKeyboardButton(text="✈️ Подключить MTProxy (Telegram)", url=MTPROTO_HTTP_LINK))
+    kb.row(
+        types.InlineKeyboardButton(text="🌐 Страница подписки", url=f"{APP_URL}/sub/{sub_token}"),
+        types.InlineKeyboardButton(text="ℹ️ Инструкция", callback_data="help_info")
+    )
     return kb
 
 
@@ -499,24 +436,42 @@ async def redirect_to_client(client: str, token: str):
     sub_url = f"{APP_URL}/sub/{token}"
     if client == "happ":
         target = f"happ://add/{sub_url}"
+    elif client == "v2rayng":
+        target = f"v2rayng://install-config?url={sub_url}"
     elif client == "hiddify":
         target = f"hiddify://install-sub?url={sub_url}"
+    elif client == "streisand":
+        target = f"streisand://import/{sub_url}"
     elif client == "tgproxy":
         target = MTPROTO_LINK
     else:
         target = sub_url
 
     html_content = f"""<!DOCTYPE html>
-<html>
+<html lang="ru">
   <head>
     <meta charset="utf-8">
     <title>NoVPN Connect</title>
     <meta http-equiv="refresh" content="0; url={target}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body {{ margin: 0; padding: 0; background: #0b0f19; color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
+      .card {{ background: #131b2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 28px; max-width: 380px; width: 90%; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }}
+      .logo {{ font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 8px; }}
+      .desc {{ color: #94a3b8; font-size: 14px; margin-bottom: 28px; line-height: 1.5; }}
+      .btn {{ display: block; background: #ffffff; color: #000000; font-weight: 700; font-size: 16px; padding: 14px 20px; border-radius: 12px; text-decoration: none; transition: transform 0.15s ease; }}
+      .btn:active {{ transform: scale(0.98); }}
+    </style>
+    <script>
+      setTimeout(function() {{ window.location.href = "{target}"; }}, 80);
+    </script>
   </head>
-  <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #0f172a; color: #f8fafc;">
-    <h2>Подключение NoVPN...</h2>
-    <p><a href="{target}" style="color: #38bdf8; font-size: 16px; font-weight: bold;">👉 Нажмите сюда, если приложение не открылось автоматически</a></p>
+  <body>
+    <div class="card">
+      <div class="logo">novpn</div>
+      <div class="desc">Перенаправление в приложение... Если оно не открылось автоматически, нажмите кнопку ниже:</div>
+      <a href="{target}" class="btn">👉 Открыть приложение</a>
+    </div>
   </body>
 </html>"""
     return HTMLResponse(content=html_content)
