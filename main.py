@@ -381,38 +381,56 @@ async def start_handler(message: types.Message, bot: Bot):
                     user.sub_token = generate_secure_token()
             await session.commit()
 
-        # ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ ОДОБРЕН — ПОДПИСКУ НЕ ДАЕМ, ОТПРАВЛЯЕМ ЗАЯВКУ АДМИНУ
+        # ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ ОДОБРЕН — ПОДПИСКУ НЕ ДАЕМ, ОТПРАВЛЯЕМ ЗАЯВКУ АДМИНУ ТОЛЬКО 1 РАЗ
         if not user.is_active and not is_admin:
-            pending_text = (
-                "🔒 <b>Доступ ограничен</b>\n\n"
-                "Сервис <b>NoVPN</b> является закрытым приватным кластером.\n"
-                "Ваша заявка направлена администратору на модерацию.\n\n"
-                "<i>Как только администратор подтвердит доступ, вам сюда сразу придёт уведомление и персональная ссылка на подключение.</i>"
-            )
-            kb = InlineKeyboardBuilder()
-            kb.row(types.InlineKeyboardButton(text="🔄 Проверить статус заявки", callback_data="check_status"))
-            await message.answer(text=pending_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+            if user.role == "rejected":
+                await message.answer(
+                    "⛔ <b>Доступ отклонен</b>\n\nАдминистратор отклонил вашу заявку на подключение к NoVPN.",
+                    parse_mode=ParseMode.HTML
+                )
+                return
 
-            # Уведомляем администратора о новой заявке
-            user_title = html.escape(message.from_user.full_name or "Пользователь")
-            username_str = f"@{message.from_user.username}" if message.from_user.username else "отсутствует"
-            for admin_id in ADMIN_IDS:
-                try:
-                    admin_notice = (
-                        "🔔 <b>Новая заявка на доступ в NoVPN!</b>\n\n"
-                        f"👤 <b>Пользователь:</b> {user_title}\n"
-                        f"🏷 <b>Username:</b> {username_str}\n"
-                        f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
-                        f"📅 <b>Время:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                    )
-                    akb = InlineKeyboardBuilder()
-                    akb.row(
-                        types.InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_appr:{user_id}"),
-                        types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej:{user_id}")
-                    )
-                    await bot.send_message(chat_id=admin_id, text=admin_notice, parse_mode=ParseMode.HTML, reply_markup=akb.as_markup())
-                except Exception as e:
-                    logger.error(f"[Notify Admin Error] {e}")
+            if is_new:
+                pending_text = (
+                    "🔒 <b>Доступ ограничен</b>\n\n"
+                    "Сервис <b>NoVPN</b> является закрытым приватным кластером.\n"
+                    "Ваша заявка направлена администратору на модерацию.\n\n"
+                    "<i>Как только администратор подтвердит доступ, вам сюда сразу придёт уведомление и персональная ссылка на подключение.</i>"
+                )
+                kb = InlineKeyboardBuilder()
+                kb.row(types.InlineKeyboardButton(text="🔄 Проверить статус заявки", callback_data="check_status"))
+                await message.answer(text=pending_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+                # Уведомляем администратора СТРОГО ОДИН РАЗ только при первичной регистрации:
+                user_title = html.escape(message.from_user.full_name or "Пользователь")
+                username_str = f"@{message.from_user.username}" if message.from_user.username else "отсутствует"
+                for admin_id in ADMIN_IDS:
+                    try:
+                        admin_notice = (
+                            "🔔 <b>Новая заявка на доступ в NoVPN!</b>\n\n"
+                            f"👤 <b>Пользователь:</b> {user_title}\n"
+                            f"🏷 <b>Username:</b> {username_str}\n"
+                            f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
+                            f"📅 <b>Время:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        )
+                        akb = InlineKeyboardBuilder()
+                        akb.row(
+                            types.InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_appr:{user_id}"),
+                            types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej:{user_id}")
+                        )
+                        await bot.send_message(chat_id=admin_id, text=admin_notice, parse_mode=ParseMode.HTML, reply_markup=akb.as_markup())
+                    except Exception as e:
+                        logger.error(f"[Notify Admin Error] {e}")
+            else:
+                # Пользователь уже подал заявку и жмет /start повторно — админу спам НЕ шлем!
+                already_text = (
+                    "⏳ <b>Ваша заявка уже находится на рассмотрении!</b>\n\n"
+                    "Администратор уже получил уведомление и рассматривает ваш запрос.\n"
+                    "Пожалуйста, ожидайте — персональная ссылка придет автоматически сразу после одобрения."
+                )
+                kb = InlineKeyboardBuilder()
+                kb.row(types.InlineKeyboardButton(text="🔄 Проверить статус заявки", callback_data="check_status"))
+                await message.answer(text=already_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
             return
 
         # Пользователь активен (или админ)
@@ -454,34 +472,39 @@ async def callback_admin_approve(callback: types.CallbackQuery, bot: Bot):
             await callback.answer("Пользователь не найден в базе данных.", show_alert=True)
             return
 
+        already_active = applicant.is_active == 1
         applicant.is_active = 1
+        applicant.role = "user"
         if not applicant.sub_token:
             applicant.sub_token = generate_secure_token()
         sub_token = applicant.sub_token
         applicant_name = applicant.first_name or str(applicant.telegram_id)
         await session.commit()
 
+    status_note = "Подписка выдана, пользователю отправлено уведомление." if not already_active else "Пользователь уже был активирован ранее."
     await callback.message.edit_text(
         f"✅ <b>Заявка одобрена!</b>\n\n"
         f"Пользователь: <b>{html.escape(applicant_name)}</b>\n"
         f"ID: <code>{applicant_id}</code>\n"
-        f"Подписка выдана, пользователю отправлено уведомление.",
+        f"{status_note}",
         parse_mode=ParseMode.HTML
     )
-    await callback.answer("Доступ успешно открыт!")
+    await callback.answer("Доступ открыт!")
 
-    try:
-        user_kb = build_main_menu(sub_token)
-        approved_msg = (
-            "🎉 <b>Ваша заявка одобрена!</b>\n\n"
-            "Администратор открыл вам доступ к приватному кластеру <b>NoVPN</b>.\n\n"
-            f"🔗 <b>Ваша персональная ссылка подписки:</b>\n"
-            f"<code>{APP_URL}/sub/{sub_token}</code>\n\n"
-            "<i>Выберите вашу платформу ниже для быстрой настройки в один клик:</i>"
-        )
-        await bot.send_message(chat_id=applicant_id, text=approved_msg, parse_mode=ParseMode.HTML, reply_markup=user_kb.as_markup())
-    except Exception as e:
-        logger.error(f"[Notify Applicant Error] {e}")
+    # Отправляем уведомление заявителю ТОЛЬКО если это не повторный клик
+    if not already_active:
+        try:
+            user_kb = build_main_menu(sub_token)
+            approved_msg = (
+                "🎉 <b>Ваша заявка одобрена!</b>\n\n"
+                "Администратор открыл вам доступ к приватному кластеру <b>NoVPN</b>.\n\n"
+                f"🔗 <b>Ваша персональная ссылка подписки:</b>\n"
+                f"<code>{APP_URL}/sub/{sub_token}</code>\n\n"
+                "<i>Выберите вашу платформу ниже для быстрой настройки в один клик:</i>"
+            )
+            await bot.send_message(chat_id=applicant_id, text=approved_msg, parse_mode=ParseMode.HTML, reply_markup=user_kb.as_markup())
+        except Exception as e:
+            logger.error(f"[Notify Applicant Error] {e}")
 
 
 @router.callback_query(F.data.startswith("adm_rej:"))
@@ -496,6 +519,7 @@ async def callback_admin_reject(callback: types.CallbackQuery, bot: Bot):
         applicant = res.scalar_one_or_none()
         if applicant:
             applicant.is_active = 0
+            applicant.role = "rejected"
             applicant.sub_token = None
             await session.commit()
             applicant_name = applicant.first_name or str(applicant_id)
