@@ -6,8 +6,10 @@ import logging
 import os
 import re
 import secrets
+import time
 import urllib.parse
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
@@ -120,6 +122,10 @@ MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&s
 UPSTREAM_FLEET_URL = os.getenv(
     "UPSTREAM_FLEET_URL",
     "https://sub.asdqwemary.de5.net:2053/sub/4305d56015dfcf2b27d4d495865a8326?raw=1"
+)
+UPSTREAM_GATEWAY_SECRET = os.getenv(
+    "UPSTREAM_GATEWAY_SECRET",
+    "novpn_sec_8f29c41d7e3a90b561c284e7f309d8aa"
 )
 
 DEFAULT_MAX_DEVICES = 5
@@ -313,11 +319,13 @@ async def sync_upstream_telemetry():
     """
     Синхронизация телеметрии и реального счетчика обращений с сервером VPS.
     Берет точные данные из /admin/stats и сопоставляет с пользователями в Telegram.
+    Защищено секретным токеном X-Novpn-Gateway-Secret.
     """
     global vps_telemetry_cache
     try:
+        headers = {"X-Novpn-Gateway-Secret": UPSTREAM_GATEWAY_SECRET}
         async with aiohttp.ClientSession() as session:
-            async with session.get(UPSTREAM_STATS_URL, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+            async with session.get(UPSTREAM_STATS_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     vps_users = data.get("users", {})
@@ -338,8 +346,11 @@ async def sync_upstream_telemetry():
 async def sync_upstream_fleet():
     global current_fleet_nodes
     try:
+        headers = {
+            "User-Agent": "NoVPN-Railway-Gateway/2.0",
+            "X-Novpn-Gateway-Secret": UPSTREAM_GATEWAY_SECRET
+        }
         async with aiohttp.ClientSession() as session:
-            headers = {"User-Agent": "NoVPN-Railway-Gateway/2.0"}
             async with session.get(UPSTREAM_FLEET_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status == 200:
                     data = await resp.text()
@@ -1524,13 +1535,32 @@ async def root():
     return {"status": "ok"}
 
 
+sub_rate_limit_history = defaultdict(list)
+SUB_RATE_LIMIT_MAX = 30  # максимум запросов
+SUB_RATE_LIMIT_WINDOW = 60  # за 60 секунд
+
+
 @app.get("/sub/{token}")
 async def get_subscription(token: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Основной шлюз выдачи подписки.
     Только для активных (is_active=1) пользователей.
-    Включает защиту Уровня 3 (Anti-Scanner & Honeypot Tarpit).
+    Включает защиту Уровня 3 (Anti-Scanner & Honeypot Tarpit) и защиту от флуда.
     """
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
+    admin_key = request.query_params.get("admin_key", "")
+    admin_auth = request.headers.get("X-Novpn-Admin", "") == "true" or admin_key == "novpn2026"
+
+    # Защита от DoS/DDoS флуда на эндпоинт подписки
+    if not admin_auth:
+        now_ts = time.time()
+        req_times = [t for t in sub_rate_limit_history[client_ip] if now_ts - t < SUB_RATE_LIMIT_WINDOW]
+        if len(req_times) >= SUB_RATE_LIMIT_MAX:
+            logger.warning(f"[Rate Limit] IP={client_ip} превысил лимит запросов к /sub/{token[:6]}***")
+            return Response(content="Rate limit exceeded. Please wait a minute.\n", status_code=429)
+        req_times.append(now_ts)
+        sub_rate_limit_history[client_ip] = req_times
+
     user_res = await db.execute(select(User).where(User.sub_token == token))
     user = user_res.scalar_one_or_none()
     if not user:
@@ -1543,8 +1573,6 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
     ua_lower = user_agent.lower()
     accept_header = request.headers.get("Accept", "").lower()
     raw_param = request.query_params.get("raw", "")
-    admin_key = request.query_params.get("admin_key", "")
-    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
 
     # 1. Признаки официальных VPN-клиентов
     vpn_clients = (
