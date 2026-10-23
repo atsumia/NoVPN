@@ -141,6 +141,7 @@ class User(Base):
     last_seen_at = Column(DateTime, default=datetime.utcnow)
     last_sub_sync = Column(DateTime, nullable=True)
     sub_sync_count = Column(Integer, default=0)
+    max_devices = Column(Integer, default=DEFAULT_MAX_DEVICES, nullable=True)
 
 
 class ProxyServer(Base):
@@ -218,6 +219,16 @@ KNOWN_FLEET_USERS = [
         "role": "user",
         "sub_sync_count": 13,
     },
+    {
+        "telegram_id": 9990000002,
+        "username": "parents",
+        "first_name": "Мама и Папа",
+        "sub_token": "82389f987a17b4d6b631871685c9dce2",
+        "is_active": 1,
+        "role": "user",
+        "max_devices": 2,
+        "sub_sync_count": 0,
+    },
 ]
 
 
@@ -240,6 +251,7 @@ async def init_db():
             ("last_seen_at", "TIMESTAMP"),
             ("last_sub_sync", "TIMESTAMP"),
             ("sub_sync_count", "INTEGER DEFAULT 0"),
+            ("max_devices", "INTEGER DEFAULT 5"),
         ]
         for col_name, col_type in new_columns:
             try:
@@ -253,13 +265,14 @@ async def init_db():
         # Синхронизация действующих пользователей и их существующих ключей
         for udata in KNOWN_FLEET_USERS:
             try:
+                max_dev = udata.get("max_devices", DEFAULT_MAX_DEVICES)
                 res = await conn.execute(text(f"SELECT id, sub_sync_count FROM users WHERE telegram_id = {udata['telegram_id']} LIMIT 1;"))
                 row = res.fetchone()
                 if row:
                     curr_syncs = row[1] or 0
                     new_syncs = max(curr_syncs, udata.get("sub_sync_count", 0))
                     await conn.execute(text(
-                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs} "
+                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs}, max_devices = {max_dev} "
                         f"WHERE telegram_id = {udata['telegram_id']};"
                     ))
                 else:
@@ -269,14 +282,14 @@ async def init_db():
                         curr_syncs = t_row[1] or 0
                         new_syncs = max(curr_syncs, udata.get("sub_sync_count", 0))
                         await conn.execute(text(
-                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs} "
+                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs}, max_devices = {max_dev} "
                             f"WHERE sub_token = '{udata['sub_token']}';"
                         ))
                     else:
                         init_syncs = udata.get("sub_sync_count", 0)
                         await conn.execute(text(
-                            f"INSERT INTO users (telegram_id, username, first_name, sub_token, is_active, role, sub_sync_count) "
-                            f"VALUES ({udata['telegram_id']}, '{udata['username']}', '{udata['first_name']}', '{udata['sub_token']}', {udata['is_active']}, '{udata['role']}', {init_syncs});"
+                            f"INSERT INTO users (telegram_id, username, first_name, sub_token, is_active, role, sub_sync_count, max_devices) "
+                            f"VALUES ({udata['telegram_id']}, '{udata['username']}', '{udata['first_name']}', '{udata['sub_token']}', {udata['is_active']}, '{udata['role']}', {init_syncs}, {max_dev});"
                         ))
             except Exception as e:
                 logger.error(f"[DB Seed Error] {e}")
@@ -656,7 +669,8 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
             dev_labels = [d.device_label for d in u_devices if d.device_label]
 
             is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
-            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{DEFAULT_MAX_DEVICES}</b>"
+            user_quota = getattr(u, "max_devices", None) or DEFAULT_MAX_DEVICES
+            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{user_quota}</b>"
             dev_info_str = f" [{', '.join(dev_labels)}]" if dev_labels else ""
 
             lines.append(
@@ -827,7 +841,8 @@ async def cmd_users(message: types.Message):
             dev_labels = [d.device_label for d in u_devices if d.device_label]
 
             is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
-            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{DEFAULT_MAX_DEVICES}</b>"
+            user_quota = getattr(u, "max_devices", None) or DEFAULT_MAX_DEVICES
+            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{user_quota}</b>"
             dev_info_str = f" [{', '.join(dev_labels)}]" if dev_labels else ""
 
             lines.append(
@@ -1481,10 +1496,11 @@ async def check_and_register_device(
             select(func.count(UserDevice.id)).where(UserDevice.sub_token == token)
         )
         active_count = count_res.scalar_one() or 0
-        if active_count >= DEFAULT_MAX_DEVICES:
+        user_max_devices = getattr(user, "max_devices", None) or DEFAULT_MAX_DEVICES
+        if active_count >= user_max_devices:
             logger.warning(
                 f"[Device Limit] Превышен лимит устройств для user_id={user.telegram_id} "
-                f"({active_count}/{DEFAULT_MAX_DEVICES}). Запрос от '{label}' перенаправлен в Honeypot."
+                f"({active_count}/{user_max_devices}). Запрос от '{label}' перенаправлен в Honeypot."
             )
             return False, label
 
