@@ -66,15 +66,33 @@ def make_banner(text_label: str) -> str:
     return f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:0?security=none&encryption=none&type=tcp&headerType=none#{encoded}"
 
 
+def format_banner_node(line: str) -> str:
+    """
+    Добавляет понятные стрелки вниз ⬇️ на перекладины-разделители,
+    чтобы пользователи сразу понимали, что серверы нужно выбирать ниже.
+    """
+    if not line or "@127.0.0.1:0" not in line:
+        return line
+    parts = line.split("#", 1)
+    lbl = urllib.parse.unquote(parts[1]) if len(parts) > 1 else ""
+    if "амстердам" in lbl.lower():
+        return make_banner("⚡ ── [ амстердам • 4k ] ── ⬇️")
+    elif "шлюз" in lbl.lower() or "рф" in lbl.lower():
+        return make_banner("🛡️ ── [ шлюзы рф • 25ms ] ── ⬇️")
+    elif "резерв" in lbl.lower() or "ес" in lbl.lower():
+        return make_banner("🌍 ── [ резерв • ес / сша ] ── ⬇️")
+    return line
+
+
 # Эталонный кластер NoVPN (22 проверенных узла с тремя логическими секциями)
 DEDICATED_NODES = [
-    make_banner("⚡ ─ [ амстердам • 4k ] ─"),
+    make_banner("⚡ ── [ амстердам • 4k ] ── ⬇️"),
     "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=faster.lizeg.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
     "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
     "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=www.gazeta-business.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
     "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
     "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
-    make_banner("🛡️ ─ [ шлюзы рф • 25ms ] ─"),
+    make_banner("🛡️ ── [ шлюзы рф • 25ms ] ── ⬇️"),
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Smart%20Ape%20%28L3%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20SberCloud",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28Fast%29",
@@ -82,7 +100,7 @@ DEDICATED_NODES = [
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28gRPC%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=gazeta-business.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28X5%29",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@91.240.86.30:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20JSC%20IOT",
-    make_banner("🌍 ─ [ резерв • ес / сша ] ─"),
+    make_banner("🌍 ── [ резерв • ес / сша ] ── ⬇️"),
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@152.53.236.22:443?security=reality&encryption=none&pbk=7_3QW1h6XgI2rZ9bI_d8b3h7Z7n_u9X0&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20Relay%20%E2%80%A2%20Germany",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@212.87.222.10:8443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.nokia.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%AE%20Relay%20%E2%80%A2%20Finland",
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@86.54.28.75:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.tradingview.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B3%F0%9F%87%B1%20Relay%20%E2%80%A2%20Netherlands",
@@ -322,7 +340,7 @@ async def sync_upstream_fleet():
 
                     vless_nodes = [l for l in lines if l.startswith("vless://")]
                     if len(vless_nodes) >= 10:
-                        current_fleet_nodes = [l.strip() for l in lines if l.strip()]
+                        current_fleet_nodes = [format_banner_node(l.strip()) for l in lines if l.strip()]
                         logger.info(f"[Fleet] Обновлен флот с VPS: {len(current_fleet_nodes)} строк ({len(vless_nodes)} нод).")
     except Exception as e:
         logger.warning(f"[Fleet] Синхронизация флота с VPS временно недоступна ({e}). Используется локальный эталон.")
@@ -1598,7 +1616,7 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
         dev_title = f"{device_model} ({device_os})".strip(" ()")
         cached["devices"][dev_title] = {"title": dev_title}
 
-    raw_nodes = list(current_fleet_nodes) if current_fleet_nodes else list(DEDICATED_NODES)
+    raw_nodes = [format_banner_node(n) for n in (current_fleet_nodes if current_fleet_nodes else DEDICATED_NODES)]
     raw_payload = "\n".join(raw_nodes)
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
