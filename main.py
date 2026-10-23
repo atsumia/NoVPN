@@ -140,6 +140,7 @@ KNOWN_FLEET_USERS = [
         "sub_token": "4305d56015dfcf2b27d4d495865a8326",
         "is_active": 1,
         "role": "admin",
+        "sub_sync_count": 107,
     },
     {
         "telegram_id": 6614500398,
@@ -148,6 +149,7 @@ KNOWN_FLEET_USERS = [
         "sub_token": "ae42247fbc3271c58d7016fa4f571a4c",
         "is_active": 1,
         "role": "user",
+        "sub_sync_count": 4,
     },
     {
         "telegram_id": 7808666968,
@@ -156,6 +158,7 @@ KNOWN_FLEET_USERS = [
         "sub_token": "4b24c649cbbecf424887e4c449cd6264",
         "is_active": 1,
         "role": "user",
+        "sub_sync_count": 1,
     },
     {
         "telegram_id": 1055426403,
@@ -164,6 +167,7 @@ KNOWN_FLEET_USERS = [
         "sub_token": "f86bdeb76cffbd34e45e3def8ccbf478",
         "is_active": 1,
         "role": "vip",
+        "sub_sync_count": 1,
     },
     {
         "telegram_id": 9990000001,
@@ -172,6 +176,7 @@ KNOWN_FLEET_USERS = [
         "sub_token": "ec02c7c499ea67bb2f1d074582720fe8",
         "is_active": 1,
         "role": "user",
+        "sub_sync_count": 13,
     },
 ]
 
@@ -208,25 +213,30 @@ async def init_db():
         # Синхронизация действующих пользователей и их существующих ключей
         for udata in KNOWN_FLEET_USERS:
             try:
-                res = await conn.execute(text(f"SELECT id FROM users WHERE telegram_id = {udata['telegram_id']} LIMIT 1;"))
+                res = await conn.execute(text(f"SELECT id, sub_sync_count FROM users WHERE telegram_id = {udata['telegram_id']} LIMIT 1;"))
                 row = res.fetchone()
                 if row:
+                    curr_syncs = row[1] or 0
+                    new_syncs = max(curr_syncs, udata.get("sub_sync_count", 0))
                     await conn.execute(text(
-                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}' "
+                        f"UPDATE users SET sub_token = '{udata['sub_token']}', is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs} "
                         f"WHERE telegram_id = {udata['telegram_id']};"
                     ))
                 else:
-                    t_res = await conn.execute(text(f"SELECT id FROM users WHERE sub_token = '{udata['sub_token']}' LIMIT 1;"))
+                    t_res = await conn.execute(text(f"SELECT id, sub_sync_count FROM users WHERE sub_token = '{udata['sub_token']}' LIMIT 1;"))
                     t_row = t_res.fetchone()
                     if t_row:
+                        curr_syncs = t_row[1] or 0
+                        new_syncs = max(curr_syncs, udata.get("sub_sync_count", 0))
                         await conn.execute(text(
-                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}' "
+                            f"UPDATE users SET telegram_id = {udata['telegram_id']}, is_active = {udata['is_active']}, role = '{udata['role']}', sub_sync_count = {new_syncs} "
                             f"WHERE sub_token = '{udata['sub_token']}';"
                         ))
                     else:
+                        init_syncs = udata.get("sub_sync_count", 0)
                         await conn.execute(text(
-                            f"INSERT INTO users (telegram_id, username, first_name, sub_token, is_active, role) "
-                            f"VALUES ({udata['telegram_id']}, '{udata['username']}', '{udata['first_name']}', '{udata['sub_token']}', {udata['is_active']}, '{udata['role']}');"
+                            f"INSERT INTO users (telegram_id, username, first_name, sub_token, is_active, role, sub_sync_count) "
+                            f"VALUES ({udata['telegram_id']}, '{udata['username']}', '{udata['first_name']}', '{udata['sub_token']}', {udata['is_active']}, '{udata['role']}', {init_syncs});"
                         ))
             except Exception as e:
                 logger.error(f"[DB Seed Error] {e}")
@@ -238,6 +248,36 @@ async def init_db():
                 pass
 
     logger.info(f"[DB] База данных готова и синхронизирована. Активных пользователей: {len(KNOWN_FLEET_USERS)}")
+
+
+UPSTREAM_STATS_URL = "https://sub.asdqwemary.de5.net/admin/stats"
+vps_telemetry_cache = {}
+
+
+async def sync_upstream_telemetry():
+    """
+    Синхронизация телеметрии и реального счетчика обращений с сервером VPS.
+    Берет точные данные из /admin/stats и сопоставляет с пользователями в Telegram.
+    """
+    global vps_telemetry_cache
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(UPSTREAM_STATS_URL, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    vps_users = data.get("users", {})
+                    vps_telemetry_cache = vps_users
+                    async with AsyncSessionLocal() as session_db:
+                        for token, v_data in vps_users.items():
+                            v_fetch = v_data.get("fetch_count", 0)
+                            res = await session_db.execute(select(User).where(User.sub_token == token))
+                            u = res.scalar_one_or_none()
+                            if u and (u.sub_sync_count or 0) < v_fetch:
+                                u.sub_sync_count = v_fetch
+                        await session_db.commit()
+                    logger.info(f"[Telemetry] Синхронизирована телеметрия с VPS: {len(vps_users)} подписок.")
+    except Exception as e:
+        logger.warning(f"[Telemetry] Ошибка опроса статистики VPS: {e}")
 
 
 async def sync_upstream_fleet():
@@ -485,6 +525,9 @@ async def callback_admin_dashboard(callback: types.CallbackQuery):
         await callback.answer("⛔ Доступ только для администратора.", show_alert=True)
         return
 
+    # Синхронизируем телеметрию с VPS перед показом статистики
+    await sync_upstream_telemetry()
+
     async with AsyncSessionLocal() as session:
         total_res = await session.execute(select(func.count(User.id)))
         total_count = total_res.scalar_one()
@@ -522,19 +565,44 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
 
+    # Подтягиваем свежую телеметрию с VPS в реальном времени
+    await sync_upstream_telemetry()
+
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User).order_by(User.id.desc()).limit(15))
+        res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
         users = res.scalars().all()
 
-    lines = ["👥 <b>Последние пользователи в базе:</b>\n"]
+    lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
     for u in users:
         status_ico = "🟢" if u.is_active == 1 else "⏳"
-        name = html.escape(u.first_name or u.username or "Аноним")
+        name = html.escape(u.first_name or u.username or "Пользователь")
         uname = f"(@{u.username})" if u.username else ""
-        lines.append(f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code> | {u.sub_sync_count or 0} syncs")
+        syncs = u.sub_sync_count or 0
 
-    lines.append("\n<i>Для блокировки используйте <code>/ban &lt;id&gt;</code></i>")
+        # Определяем активные клиенты из кэша телеметрии
+        v_data = vps_telemetry_cache.get(u.sub_token, {})
+        devices = v_data.get("devices", {})
+        dev_badges = []
+        if devices:
+            for d_info in devices.values():
+                d_title = d_info.get("title", "")
+                if "iPhone" in d_title or "iOS" in d_title:
+                    dev_badges.append("📱 iOS")
+                elif "Windows" in d_title:
+                    dev_badges.append("💻 Windows")
+                elif "Android" in d_title:
+                    dev_badges.append("🤖 Android")
+                elif "v2ray" in d_title:
+                    dev_badges.append("💻 v2ray")
+                else:
+                    dev_badges.append("🌐 VPN")
+
+        dev_str = f" | {', '.join(sorted(set(dev_badges)))}" if dev_badges else ""
+        lines.append(f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n   ↳ 🔄 <b>{syncs} syncs</b>{dev_str}\n")
+
+    lines.append("<i>Для блокировки используйте <code>/ban &lt;id&gt;</code></i>")
     kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
     await callback.message.edit_text(text="\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
     await callback.answer()
@@ -768,6 +836,7 @@ async def cron_loop():
     while True:
         try:
             await sync_upstream_fleet()
+            await sync_upstream_telemetry()
         except Exception as e:
             logger.error(f"[Cron Error] {e}")
         await asyncio.sleep(900)
@@ -800,6 +869,12 @@ async def bot_polling_loop():
 async def lifespan(app: FastAPI):
     await init_db()
     await sync_upstream_fleet()
+    await sync_upstream_telemetry()
+    c_task = asyncio.create_task(cron_loop())
+    b_task = asyncio.create_task(bot_polling_loop())
+    yield
+    c_task.cancel()
+    b_task.cancel()
     c_task = asyncio.create_task(cron_loop())
     b_task = asyncio.create_task(bot_polling_loop())
     yield
