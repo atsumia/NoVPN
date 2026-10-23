@@ -19,7 +19,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
-from sqlalchemy import BigInteger, Column, DateTime, Integer, String, delete, select, text
+from sqlalchemy import BigInteger, Column, DateTime, Integer, String, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -27,6 +27,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("NoVPN")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+# Список ID администраторов (по умолчанию ваш ID 8622456469)
+RAW_ADMINS = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "8622456469"))
+ADMIN_IDS = set()
+for item in RAW_ADMINS.split(","):
+    cleaned = item.strip()
+    if cleaned.isdigit():
+        ADMIN_IDS.add(int(cleaned))
+if not ADMIN_IDS:
+    ADMIN_IDS.add(8622456469)
 
 RAW_APP_URL = os.getenv("APP_URL", "https://novpn-production.up.railway.app").strip().rstrip("/")
 if not RAW_APP_URL.startswith("http://") and not RAW_APP_URL.startswith("https://"):
@@ -80,10 +90,10 @@ DEDICATED_NODES = [
     "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@169.40.42.168:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=yahoo.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%BA%F0%9F%87%B8%20Relay%20%E2%80%A2%20United%20States",
 ]
 
-# Кэш актуального флота (инициализируется локальной конфигурацией, периодически обновляется)
+# Кэш актуального флота
 current_fleet_nodes = list(DEDICATED_NODES)
 
-# MTProto Proxy для подключения Telegram без сторонних приложений
+# MTProto Proxy для быстрого подключения Telegram
 MTPROTO_LINK = "tg://proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
 MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&secret=eea27a33c5bed5ad8351b5b0eac0632c8a79616e6465782e7275"
 
@@ -96,15 +106,17 @@ UPSTREAM_FLEET_URL = os.getenv(
 class User(Base):
     """
     Таблица пользователей NoVPN.
-    Каждый telegram_id строго изолирован и привязан к уникальному sub_token.
+    Каждый telegram_id строго изолирован.
+    is_active = 0 (Ожидает подтверждения администратора), 1 (Одобрен / Активен).
     """
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     telegram_id = Column(BigInteger, unique=True, index=True, nullable=False)
     username = Column(String, nullable=True)
     first_name = Column(String, nullable=True)
-    sub_token = Column(String, unique=True, index=True, nullable=False)
-    is_active = Column(Integer, default=1)
+    sub_token = Column(String, unique=True, index=True, nullable=True)
+    is_active = Column(Integer, default=0)
+    role = Column(String, default="user")
     created_at = Column(DateTime, default=datetime.utcnow)
     last_seen_at = Column(DateTime, default=datetime.utcnow)
     last_sub_sync = Column(DateTime, nullable=True)
@@ -121,20 +133,21 @@ class ProxyServer(Base):
 
 
 def generate_secure_token() -> str:
-    """Генерация криптографически безопасного и уникального токена подписки."""
+    """Генерация криптографически стойкого токена подписки."""
     return secrets.token_hex(16)
 
 
 async def init_db():
-    logger.info("[DB] Инициализация базы данных и проверка схемы...")
+    logger.info("[DB] Инициализация базы данных и проверка прав...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        # Безопасное добавление новых колонок в таблицу users (Postgres / SQLite)
         new_columns = [
             ("username", "VARCHAR"),
             ("first_name", "VARCHAR"),
-            ("is_active", "INTEGER DEFAULT 1"),
+            ("sub_token", "VARCHAR"),
+            ("is_active", "INTEGER DEFAULT 0"),
+            ("role", "VARCHAR DEFAULT 'user'"),
             ("last_seen_at", "TIMESTAMP"),
             ("last_sub_sync", "TIMESTAMP"),
             ("sub_sync_count", "INTEGER DEFAULT 0"),
@@ -148,22 +161,17 @@ async def init_db():
                 except Exception:
                     pass
 
-        try:
-            await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN IF NOT EXISTS tier INTEGER DEFAULT 3;"))
-        except Exception:
+        # Гарантируем, что администратор всегда активен
+        for admin_id in ADMIN_IDS:
             try:
-                await conn.execute(text("ALTER TABLE proxy_servers ADD COLUMN tier INTEGER DEFAULT 3;"))
+                await conn.execute(text(f"UPDATE users SET is_active = 1, role = 'admin' WHERE telegram_id = {admin_id};"))
             except Exception:
                 pass
-    logger.info("[DB] База данных готова к обслуживанию клиентов.")
+
+    logger.info(f"[DB] База данных готова. Список администраторов: {ADMIN_IDS}")
 
 
 async def sync_upstream_fleet():
-    """
-    Фоновая синхронизация с амстердамским харвестером VPS.
-    Railway получает проверенный флот с низким пингом и авто-заменой нод Nova.
-    При сбое сети Railway всегда надежно отдает DEDICATED_NODES без перебоев.
-    """
     global current_fleet_nodes
     try:
         async with aiohttp.ClientSession() as session:
@@ -186,42 +194,10 @@ async def sync_upstream_fleet():
         logger.warning(f"[Fleet] Синхронизация флота с VPS временно недоступна ({e}). Используется локальный эталон.")
 
 
-async def get_or_create_user(session: AsyncSession, tg_user: types.User) -> User:
-    """
-    Аутентификация Telegram-пользователя на Railway.
-    Строгая привязка telegram_id к уникальной изолированной записи.
-    """
-    res = await session.execute(select(User).where(User.telegram_id == tg_user.id))
-    user = res.scalar_one_or_none()
-    if not user:
-        user = User(
-            telegram_id=tg_user.id,
-            username=tg_user.username or "",
-            first_name=tg_user.first_name or "",
-            sub_token=generate_secure_token(),
-            is_active=1,
-            created_at=datetime.utcnow(),
-            last_seen_at=datetime.utcnow(),
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        logger.info(f"[Auth] Зарегистрирован новый пользователь ID={tg_user.id} (@{tg_user.username})")
-    else:
-        # Обновляем метаданные и отметку активности
-        user.last_seen_at = datetime.utcnow()
-        if tg_user.username and user.username != tg_user.username:
-            user.username = tg_user.username
-        if tg_user.first_name and user.first_name != tg_user.first_name:
-            user.first_name = tg_user.first_name
-        await session.commit()
-    return user
-
-
 router = Router()
 
 
-def build_main_menu(sub_token: str) -> InlineKeyboardBuilder:
+def build_main_menu(sub_token: str, is_admin: bool = False) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.row(
         types.InlineKeyboardButton(text="🍏 iOS (iPhone / iPad)", callback_data="guide_ios"),
@@ -235,6 +211,8 @@ def build_main_menu(sub_token: str) -> InlineKeyboardBuilder:
         types.InlineKeyboardButton(text="🌐 Открыть веб-кабинет", url=f"{APP_URL}/sub/{sub_token}"),
         types.InlineKeyboardButton(text="🔄 Сбросить ссылку", callback_data="reset_prompt"),
     )
+    if is_admin:
+        kb.row(types.InlineKeyboardButton(text="👑 Панель управления (Админ)", callback_data="admin_dashboard"))
     kb.row(
         types.InlineKeyboardButton(text="❓ О сервисе и защите от блокировок", callback_data="info_service")
     )
@@ -242,10 +220,11 @@ def build_main_menu(sub_token: str) -> InlineKeyboardBuilder:
 
 
 def make_welcome_text(user: User, sub_link: str) -> str:
-    name_display = html.escape(user.first_name or "друг")
+    name_display = html.escape(user.first_name or user.username or "друг")
+    role_badge = " [Администратор 👑]" if user.telegram_id in ADMIN_IDS else ""
     return (
-        f"👋 <b>Привет, {name_display}!</b>\n\n"
-        "Добро пожаловать в <b>NoVPN</b> — высокоскоростной сервис для свободного доступа в сеть в условиях жестких блокировок ТСПУ и DPI.\n\n"
+        f"👋 <b>Привет, {name_display}!</b>{role_badge}\n\n"
+        "Добро пожаловать в <b>NoVPN</b> — приватный кластер для свободного доступа в сеть в условиях жестких блокировок ТСПУ и DPI.\n\n"
         "🛡️ <b>Ваш статус:</b> <code>🟢 Активна (Безлимит)</code>\n"
         f"🆔 <b>Telegram ID:</b> <code>{user.telegram_id}</code>\n"
         f"🔄 <b>Синхронизаций:</b> <code>{user.sub_sync_count or 0}</code>\n\n"
@@ -256,29 +235,313 @@ def make_welcome_text(user: User, sub_link: str) -> str:
 
 
 @router.message(CommandStart())
-async def start_handler(message: types.Message):
+async def start_handler(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
+    is_admin = user_id in ADMIN_IDS
+
     async with AsyncSessionLocal() as session:
-        user = await get_or_create_user(session, message.from_user)
-        if not user.is_active:
-            await message.answer("⛔ <b>Доступ ограничен.</b> Ваш аккаунт деактивирован администратором.", parse_mode=ParseMode.HTML)
+        res = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = res.scalar_one_or_none()
+
+        is_new = False
+        if not user:
+            is_new = True
+            user = User(
+                telegram_id=user_id,
+                username=message.from_user.username or "",
+                first_name=message.from_user.first_name or "",
+                sub_token=generate_secure_token() if is_admin else None,
+                is_active=1 if is_admin else 0,
+                role="admin" if is_admin else "user",
+                created_at=datetime.utcnow(),
+                last_seen_at=datetime.utcnow(),
+            )
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+        else:
+            user.last_seen_at = datetime.utcnow()
+            if message.from_user.username:
+                user.username = message.from_user.username
+            if message.from_user.first_name:
+                user.first_name = message.from_user.first_name
+            if is_admin:
+                user.is_active = 1
+                user.role = "admin"
+                if not user.sub_token:
+                    user.sub_token = generate_secure_token()
+            await session.commit()
+
+        # ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ ОДОБРЕН — ПОДПИСКУ НЕ ДАЕМ, ОТПРАВЛЯЕМ ЗАЯВКУ АДМИНУ
+        if not user.is_active and not is_admin:
+            pending_text = (
+                "🔒 <b>Доступ ограничен</b>\n\n"
+                "Сервис <b>NoVPN</b> является закрытым приватным кластером.\n"
+                "Ваша заявка направлена администратору на модерацию.\n\n"
+                "<i>Как только администратор подтвердит доступ, вам сюда сразу придёт уведомление и персональная ссылка на подключение.</i>"
+            )
+            kb = InlineKeyboardBuilder()
+            kb.row(types.InlineKeyboardButton(text="🔄 Проверить статус заявки", callback_data="check_status"))
+            await message.answer(text=pending_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+            # Уведомляем администратора о новой заявке
+            user_title = html.escape(message.from_user.full_name or "Пользователь")
+            username_str = f"@{message.from_user.username}" if message.from_user.username else "отсутствует"
+            for admin_id in ADMIN_IDS:
+                try:
+                    admin_notice = (
+                        "🔔 <b>Новая заявка на доступ в NoVPN!</b>\n\n"
+                        f"👤 <b>Пользователь:</b> {user_title}\n"
+                        f"🏷 <b>Username:</b> {username_str}\n"
+                        f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
+                        f"📅 <b>Время:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                    )
+                    akb = InlineKeyboardBuilder()
+                    akb.row(
+                        types.InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_appr:{user_id}"),
+                        types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej:{user_id}")
+                    )
+                    await bot.send_message(chat_id=admin_id, text=admin_notice, parse_mode=ParseMode.HTML, reply_markup=akb.as_markup())
+                except Exception as e:
+                    logger.error(f"[Notify Admin Error] {e}")
             return
 
+        # Пользователь активен (или админ)
+        sub_link = f"{APP_URL}/sub/{user.sub_token}"
+        kb = build_main_menu(user.sub_token, is_admin=is_admin)
+        welcome_text = make_welcome_text(user, sub_link)
+        await message.answer(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "check_status")
+async def callback_check_status(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = res.scalar_one_or_none()
+
+    if not user or not user.is_active:
+        await callback.answer("⏳ Ваша заявка все еще находится на рассмотрении.", show_alert=True)
+        return
+
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
-    kb = build_main_menu(user.sub_token)
+    kb = build_main_menu(user.sub_token, is_admin=user.telegram_id in ADMIN_IDS)
     welcome_text = make_welcome_text(user, sub_link)
-    await message.answer(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    await callback.message.edit_text(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    await callback.answer("✅ Доступ одобрен!")
+
+
+@router.callback_query(F.data.startswith("adm_appr:"))
+async def callback_admin_approve(callback: types.CallbackQuery, bot: Bot):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Недостаточно прав.", show_alert=True)
+        return
+
+    applicant_id = int(callback.data.split(":")[1])
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == applicant_id))
+        applicant = res.scalar_one_or_none()
+        if not applicant:
+            await callback.answer("Пользователь не найден в базе данных.", show_alert=True)
+            return
+
+        applicant.is_active = 1
+        if not applicant.sub_token:
+            applicant.sub_token = generate_secure_token()
+        sub_token = applicant.sub_token
+        applicant_name = applicant.first_name or str(applicant.telegram_id)
+        await session.commit()
+
+    await callback.message.edit_text(
+        f"✅ <b>Заявка одобрена!</b>\n\n"
+        f"Пользователь: <b>{html.escape(applicant_name)}</b>\n"
+        f"ID: <code>{applicant_id}</code>\n"
+        f"Подписка выдана, пользователю отправлено уведомление.",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer("Доступ успешно открыт!")
+
+    try:
+        user_kb = build_main_menu(sub_token)
+        approved_msg = (
+            "🎉 <b>Ваша заявка одобрена!</b>\n\n"
+            "Администратор открыл вам доступ к приватному кластеру <b>NoVPN</b>.\n\n"
+            f"🔗 <b>Ваша персональная ссылка подписки:</b>\n"
+            f"<code>{APP_URL}/sub/{sub_token}</code>\n\n"
+            "<i>Выберите вашу платформу ниже для быстрой настройки в один клик:</i>"
+        )
+        await bot.send_message(chat_id=applicant_id, text=approved_msg, parse_mode=ParseMode.HTML, reply_markup=user_kb.as_markup())
+    except Exception as e:
+        logger.error(f"[Notify Applicant Error] {e}")
+
+
+@router.callback_query(F.data.startswith("adm_rej:"))
+async def callback_admin_reject(callback: types.CallbackQuery, bot: Bot):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Недостаточно прав.", show_alert=True)
+        return
+
+    applicant_id = int(callback.data.split(":")[1])
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == applicant_id))
+        applicant = res.scalar_one_or_none()
+        if applicant:
+            applicant.is_active = 0
+            applicant.sub_token = None
+            await session.commit()
+            applicant_name = applicant.first_name or str(applicant_id)
+        else:
+            applicant_name = str(applicant_id)
+
+    await callback.message.edit_text(
+        f"❌ <b>Заявка отклонена.</b>\n\n"
+        f"Пользователь: <b>{html.escape(applicant_name)}</b> (ID: <code>{applicant_id}</code>)",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer("Заявка отклонена.")
+
+    try:
+        await bot.send_message(
+            chat_id=applicant_id,
+            text="⛔ <b>Заявка отклонена</b>\n\nАдминистратор отклонил ваш запрос на доступ к NoVPN.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "admin_dashboard")
+async def callback_admin_dashboard(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Доступ только для администратора.", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        total_res = await session.execute(select(func.count(User.id)))
+        total_count = total_res.scalar_one()
+
+        active_res = await session.execute(select(func.count(User.id)).where(User.is_active == 1))
+        active_count = active_res.scalar_one()
+
+        pending_res = await session.execute(select(func.count(User.id)).where(User.is_active == 0))
+        pending_count = pending_res.scalar_one()
+
+        sync_res = await session.execute(select(func.sum(User.sub_sync_count)))
+        total_syncs = sync_res.scalar_one() or 0
+
+    stats_text = (
+        "👑 <b>Панель администратора NoVPN</b>\n\n"
+        "📊 <b>Статистика пользователей:</b>\n"
+        f"• Всего зарегистрировано: <b>{total_count}</b>\n"
+        f"• Активных подписок: <b>{active_count}</b>\n"
+        f"• Ожидают подтверждения: <b>{pending_count}</b>\n"
+        f"• Всего синхронизаций конфигураций: <b>{total_syncs}</b>\n\n"
+        f"🌐 <b>Узлов в сети:</b> {len(current_fleet_nodes)}\n\n"
+        "<i>Команды быстрого управления:</i>\n"
+        "• <code>/approve &lt;tg_id&gt;</code> — выдать доступ\n"
+        "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
+    await callback.message.edit_text(text=stats_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_list_users")
+async def callback_admin_list_users(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).order_by(User.id.desc()).limit(15))
+        users = res.scalars().all()
+
+    lines = ["👥 <b>Последние пользователи в базе:</b>\n"]
+    for u in users:
+        status_ico = "🟢" if u.is_active == 1 else "⏳"
+        name = html.escape(u.first_name or u.username or "Аноним")
+        uname = f"(@{u.username})" if u.username else ""
+        lines.append(f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code> | {u.sub_sync_count or 0} syncs")
+
+    lines.append("\n<i>Для блокировки используйте <code>/ban &lt;id&gt;</code></i>")
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
+    await callback.message.edit_text(text="\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.message(Command("approve"))
+async def cmd_approve(message: types.Message, bot: Bot):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Использование: <code>/approve &lt;telegram_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+    target_id = int(parts[1])
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = res.scalar_one_or_none()
+        if not user:
+            user = User(telegram_id=target_id, sub_token=generate_secure_token(), is_active=1)
+            session.add(user)
+        else:
+            user.is_active = 1
+            if not user.sub_token:
+                user.sub_token = generate_secure_token()
+        sub_token = user.sub_token
+        await session.commit()
+
+    await message.answer(f"✅ Доступ для ID <code>{target_id}</code> успешно выдан!", parse_mode=ParseMode.HTML)
+    try:
+        user_kb = build_main_menu(sub_token)
+        await bot.send_message(
+            chat_id=target_id,
+            text=f"🎉 <b>Вам открыт доступ к NoVPN!</b>\n\nСсылка подписки:\n<code>{APP_URL}/sub/{sub_token}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=user_kb.as_markup()
+        )
+    except Exception:
+        pass
+
+
+@router.message(Command("ban"))
+async def cmd_ban(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Использование: <code>/ban &lt;telegram_id&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+    target_id = int(parts[1])
+    if target_id in ADMIN_IDS:
+        await message.answer("Нельзя заблокировать администратора.")
+        return
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = res.scalar_one_or_none()
+        if user:
+            user.is_active = 0
+            user.sub_token = None
+            await session.commit()
+            await message.answer(f"🚫 Пользователь <code>{target_id}</code> заблокирован, подписка отозвана.", parse_mode=ParseMode.HTML)
+        else:
+            await message.answer("Пользователь не найден.")
 
 
 @router.callback_query(F.data == "main_menu")
 async def callback_main_menu(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user)
-        if not user.is_active:
-            await callback.answer("⛔ Доступ ограничен.", show_alert=True)
-            return
+        res = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+        user = res.scalar_one_or_none()
+
+    if not user or not user.is_active:
+        await callback.answer("⛔ Доступ ограничен. Ожидайте подтверждения заявки.", show_alert=True)
+        return
 
     sub_link = f"{APP_URL}/sub/{user.sub_token}"
-    kb = build_main_menu(user.sub_token)
+    kb = build_main_menu(user.sub_token, is_admin=callback.from_user.id in ADMIN_IDS)
     welcome_text = make_welcome_text(user, sub_link)
     await callback.message.edit_text(text=welcome_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
     await callback.answer()
@@ -287,7 +550,11 @@ async def callback_main_menu(callback: types.CallbackQuery):
 @router.callback_query(F.data == "guide_ios")
 async def callback_guide_ios(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user)
+        res = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+        user = res.scalar_one_or_none()
+    if not user or not user.is_active:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
 
     token = user.sub_token
     text_content = (
@@ -311,7 +578,11 @@ async def callback_guide_ios(callback: types.CallbackQuery):
 @router.callback_query(F.data == "guide_android")
 async def callback_guide_android(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user)
+        res = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+        user = res.scalar_one_or_none()
+    if not user or not user.is_active:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
 
     token = user.sub_token
     text_content = (
@@ -334,7 +605,11 @@ async def callback_guide_android(callback: types.CallbackQuery):
 @router.callback_query(F.data == "guide_pc")
 async def callback_guide_pc(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user)
+        res = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+        user = res.scalar_one_or_none()
+    if not user or not user.is_active:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
 
     token = user.sub_token
     sub_link = f"{APP_URL}/sub/{token}"
@@ -378,11 +653,10 @@ async def callback_do_reset_token(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
         user = res.scalar_one_or_none()
-        if not user:
-            await callback.answer("Ошибка: пользователь не найден.", show_alert=True)
+        if not user or not user.is_active:
+            await callback.answer("Ошибка: доступ не активен.", show_alert=True)
             return
 
-        # Генерируем новый криптографический токен и обновляем в базе
         new_token = generate_secure_token()
         user.sub_token = new_token
         user.last_seen_at = datetime.utcnow()
@@ -422,13 +696,12 @@ async def callback_info_service(callback: types.CallbackQuery):
 
 
 async def cron_loop():
-    """Фоновый таймер периодической синхронизации флота."""
     while True:
         try:
             await sync_upstream_fleet()
         except Exception as e:
             logger.error(f"[Cron Error] {e}")
-        await asyncio.sleep(900)  # каждые 15 минут
+        await asyncio.sleep(900)
 
 
 async def bot_polling_loop():
@@ -447,7 +720,7 @@ async def bot_polling_loop():
             await dp.start_polling(bot)
             break
         except TelegramConflictError:
-            logger.warning("[Bot] Конфликт сессий бота (другой процесс слушает обновления). Ожидание 5 сек...")
+            logger.warning("[Bot] Конфликт сессий бота. Ожидание 5 сек...")
             await asyncio.sleep(5)
         except Exception as e:
             logger.error(f"[Bot Polling Error] {e}")
@@ -457,7 +730,6 @@ async def bot_polling_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    # Первичная синхронизация флота при старте приложения
     await sync_upstream_fleet()
     c_task = asyncio.create_task(cron_loop())
     b_task = asyncio.create_task(bot_polling_loop())
@@ -475,10 +747,8 @@ async def get_db():
 
 
 def render_web_landing(user: User, token: str) -> str:
-    """Генерация красивого адаптивного веб-портала NoVPN при открытии ссылки в браузере."""
     sub_url = f"{APP_URL}/sub/{token}"
     name = html.escape(user.first_name or user.username or "Пользователь")
-    tg_id = user.telegram_id
     sync_count = user.sub_sync_count or 0
 
     return f"""<!DOCTYPE html>
@@ -754,9 +1024,7 @@ async def root():
 async def get_subscription(token: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Основной шлюз выдачи подписки.
-    Строгая аутентификация пользователя по token.
-    Если запрос из веб-браузера — отображает красивый личный кабинет.
-    Если запрос из VPN-клиента — отдает Base64 со списком серверов.
+    Только для активных (is_active=1) пользователей.
     """
     user_res = await db.execute(select(User).where(User.sub_token == token))
     user = user_res.scalar_one_or_none()
@@ -764,7 +1032,7 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
         raise HTTPException(status_code=404, detail="Subscription token not found or revoked")
 
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Subscription is suspended")
+        raise HTTPException(status_code=403, detail="Subscription is suspended or pending approval")
 
     # Обновляем метрику использования
     user.last_sub_sync = datetime.utcnow()
@@ -775,7 +1043,6 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
     accept_header = request.headers.get("Accept", "").lower()
     raw_param = request.query_params.get("raw", "")
 
-    # Определение: это браузер человека или VPN-клиент?
     vpn_clients = (
         "happ", "v2ray", "hiddify", "sing-box", "shadowrocket",
         "nekobox", "karing", "streisand", "clash", "loon", "surge",
@@ -789,7 +1056,6 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
         html_page = render_web_landing(user, token)
         return HTMLResponse(content=html_page, status_code=200)
 
-    # Формируем список серверов
     nodes = list(current_fleet_nodes) if current_fleet_nodes else list(DEDICATED_NODES)
     raw_payload = "\n".join(nodes)
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
@@ -805,15 +1071,14 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
 
 @app.get("/open/{client}")
 async def redirect_to_client(client: str, token: str, db: AsyncSession = Depends(get_db)):
-    """Безопасный 1-клик редирект в мобильные приложения с валидацией токена."""
     user_res = await db.execute(select(User).where(User.sub_token == token))
     user = user_res.scalar_one_or_none()
-    if not user:
+    if not user or not user.is_active:
         return HTMLResponse(
             "<!DOCTYPE html><html><body style='background:#0b0f19;color:#fff;text-align:center;padding:50px;font-family:sans-serif;'>"
-            "<h2>⚠️ Ссылка недействительна</h2><p>Пожалуйста, перейдите в Telegram-бот и получите актуальную ссылку.</p>"
+            "<h2>⚠️ Доступ ограничен или ссылка недействительна</h2><p>Пожалуйста, перейдите в Telegram-бот и проверьте статус доступа.</p>"
             "</body></html>",
-            status_code=404,
+            status_code=403 if user else 404,
         )
 
     sub_url = f"{APP_URL}/sub/{token}"
