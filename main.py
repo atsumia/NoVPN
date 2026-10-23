@@ -312,6 +312,241 @@ UPSTREAM_STATS_URL = os.getenv(
     "UPSTREAM_STATS_URL",
     "https://sub.asdqwemary.de5.net:2053/admin/stats"
 )
+APPLE_MODELS = {
+    # iPhone 16
+    "iPhone17,1": "iPhone 16 Pro",
+    "iPhone17,2": "iPhone 16 Pro Max",
+    "iPhone17,3": "iPhone 16",
+    "iPhone17,4": "iPhone 16 Plus",
+    # iPhone 15
+    "iPhone16,1": "iPhone 15 Pro",
+    "iPhone16,2": "iPhone 15 Pro Max",
+    "iPhone15,4": "iPhone 15",
+    "iPhone15,5": "iPhone 15 Plus",
+    # iPhone 14
+    "iPhone15,2": "iPhone 14 Pro",
+    "iPhone15,3": "iPhone 14 Pro Max",
+    "iPhone14,7": "iPhone 14",
+    "iPhone14,8": "iPhone 14 Plus",
+    # iPhone 13
+    "iPhone14,2": "iPhone 13 Pro",
+    "iPhone14,3": "iPhone 13 Pro Max",
+    "iPhone14,5": "iPhone 13",
+    "iPhone14,4": "iPhone 13 mini",
+    # iPhone 12
+    "iPhone13,3": "iPhone 12 Pro",
+    "iPhone13,4": "iPhone 12 Pro Max",
+    "iPhone13,2": "iPhone 12",
+    "iPhone13,1": "iPhone 12 mini",
+    # iPhone 11
+    "iPhone12,1": "iPhone 11",
+    "iPhone12,3": "iPhone 11 Pro",
+    "iPhone12,5": "iPhone 11 Pro Max",
+    # iPhone SE
+    "iPhone12,8": "iPhone SE (2nd gen)",
+    "iPhone14,6": "iPhone SE (3rd gen)",
+    # iPhone X / XS / XR
+    "iPhone11,2": "iPhone XS",
+    "iPhone11,4": "iPhone XS Max",
+    "iPhone11,6": "iPhone XS Max",
+    "iPhone11,8": "iPhone XR",
+    "iPhone10,3": "iPhone X",
+    "iPhone10,6": "iPhone X",
+    # iPhone 8
+    "iPhone10,1": "iPhone 8",
+    "iPhone10,4": "iPhone 8",
+    "iPhone10,2": "iPhone 8 Plus",
+    "iPhone10,5": "iPhone 8 Plus",
+}
+
+
+def parse_device_badge(model: str = "", os_name: str = "", ua: str = "", raw_title: str = "") -> str:
+    """
+    Интеллектуальный парсер оборудования, ОС и клиента в премиальный бейдж.
+    Примеры:
+    - 📱 iPhone 14 Pro • iOS 18.0 (Happ 4.13.0)
+    - 💻 Windows PC • Windows 11 (Happ 4.1.1)
+    - 🤖 Android Device • Android (Happ 4.7.1)
+    - 💻 Windows PC • Windows (v2raytun)
+    """
+    model = (model or "").strip()
+    os_name = (os_name or "").strip()
+    ua = (ua or "").strip()
+    raw_title = (raw_title or "").strip()
+
+    client_app = ""
+    ua_lower = ua.lower()
+
+    if "happ/" in ua_lower:
+        m = re.search(r"Happ/([0-9.]+)", ua, re.IGNORECASE)
+        client_app = f"Happ {m.group(1)}" if m else "Happ"
+        if not os_name:
+            if "/windows" in ua_lower:
+                os_name = "Windows"
+            elif "/ios" in ua_lower:
+                os_name = "iOS"
+            elif "/android" in ua_lower:
+                os_name = "Android"
+            elif "/macos" in ua_lower or "/darwin" in ua_lower:
+                os_name = "macOS"
+    elif "v2rayng/" in ua_lower:
+        m = re.search(r"v2rayNG/([0-9.]+)", ua, re.IGNORECASE)
+        client_app = f"v2rayNG {m.group(1)}" if m else "v2rayNG"
+        if not os_name:
+            os_name = "Android"
+    elif "v2rayn" in ua_lower:
+        client_app = "v2rayN"
+        if not os_name:
+            os_name = "Windows"
+    elif "v2raytun" in ua_lower:
+        client_app = "v2raytun"
+        if not os_name:
+            if "windows" in ua_lower:
+                os_name = "Windows"
+            elif "ios" in ua_lower:
+                os_name = "iOS"
+            elif "android" in ua_lower:
+                os_name = "Android"
+    elif "hiddify" in ua_lower:
+        m = re.search(r"Hiddify/([0-9.]+)", ua, re.IGNORECASE)
+        client_app = f"Hiddify {m.group(1)}" if m else "Hiddify"
+    elif "streisand" in ua_lower:
+        client_app = "Streisand"
+        if not os_name:
+            os_name = "iOS"
+    elif "sing-box" in ua_lower:
+        client_app = "sing-box"
+    elif "shadowrocket" in ua_lower:
+        client_app = "Shadowrocket"
+        if not os_name:
+            os_name = "iOS"
+    elif "clash" in ua_lower:
+        client_app = "Clash"
+
+    if not client_app and raw_title:
+        m = re.search(r"\(([^)]+)\)", raw_title)
+        if m:
+            client_app = m.group(1)
+
+    hardware = ""
+    icon = "📱"
+
+    clean_model_key = model.split()[0] if model else ""
+    if clean_model_key in APPLE_MODELS:
+        hardware = APPLE_MODELS[clean_model_key]
+        icon = "📱"
+        if not os_name:
+            os_name = "iOS"
+    elif "iphone" in model.lower():
+        hardware = model
+        icon = "📱"
+        if not os_name:
+            os_name = "iOS"
+    elif "ipad" in model.lower() or model.startswith("iPad"):
+        hardware = "Apple iPad"
+        icon = "📱"
+        if not os_name:
+            os_name = "iPadOS"
+    elif "amethyst" in model.lower():
+        if "mac" in os_name.lower() or "darwin" in os_name.lower():
+            hardware = "Apple Mac"
+            icon = "💻"
+            os_name = os_name or "macOS"
+        else:
+            hardware = "Windows PC"
+            icon = "💻"
+            os_name = os_name or "Windows"
+    elif model.startswith("SM-"):
+        hardware = f"Samsung Galaxy ({model})"
+        icon = "🤖"
+        os_name = os_name or "Android"
+    elif model.lower().startswith("pixel"):
+        hardware = f"Google {model}"
+        icon = "🤖"
+        os_name = os_name or "Android"
+    elif model:
+        hardware = model
+        if "windows" in os_name.lower() or "pc" in model.lower():
+            icon = "💻"
+        elif "android" in os_name.lower():
+            icon = "🤖"
+        elif "ios" in os_name.lower() or "iphone" in model.lower():
+            icon = "📱"
+
+    if not hardware:
+        raw_clean = re.sub(r"^[^\w]+", "", raw_title).strip()
+        raw_clean = re.sub(r"\(.*?\)", "", raw_clean).strip()
+        if "v2rayng" in ua_lower or "android" in raw_clean.lower() or "android" in os_name.lower() or "android" in ua_lower:
+            hardware = "Android Device"
+            icon = "🤖"
+            os_name = os_name or "Android"
+        elif "windows" in raw_clean.lower() or "windows" in os_name.lower() or "windows" in ua_lower:
+            hardware = "Windows PC"
+            icon = "💻"
+            os_name = os_name or "Windows"
+        elif "mac" in raw_clean.lower() or "macos" in os_name.lower():
+            hardware = "Apple Mac"
+            icon = "💻"
+            os_name = os_name or "macOS"
+        elif "iphone" in raw_clean.lower() or "ios" in os_name.lower() or "ios" in ua_lower:
+            hardware = "Apple iPhone"
+            icon = "📱"
+            os_name = os_name or "iOS"
+        elif raw_clean:
+            hardware = raw_clean
+            icon = "🌐"
+        else:
+            hardware = "VPN Client"
+            icon = "🌐"
+
+    if not os_name:
+        if hardware == "Windows PC":
+            os_name = "Windows"
+        elif hardware == "Android Device":
+            os_name = "Android"
+        elif hardware in ("Apple iPhone", "Apple iPad"):
+            os_name = "iOS"
+        elif hardware == "Apple Mac":
+            os_name = "macOS"
+
+    parts = []
+    if os_name:
+        parts.append(os_name)
+    if client_app:
+        parts.append(f"({client_app})")
+
+    meta = " ".join(parts).strip()
+    if meta:
+        return f"{icon} {hardware} • {meta}"
+    return f"{icon} {hardware}"
+
+
+def format_time_ago(dt: datetime | None) -> str:
+    """
+    Форматирует время последней активности в относительном времени по MSK (UTC+3).
+    """
+    if not dt:
+        return "Неизвестно"
+    now_utc = datetime.utcnow()
+    diff = now_utc - dt
+    total_seconds = int(diff.total_seconds())
+
+    msk_dt = dt + timedelta(hours=3)
+    now_msk = now_utc + timedelta(hours=3)
+    time_str = msk_dt.strftime("%H:%M MSK")
+
+    if total_seconds < 60:
+        return "только что"
+    if total_seconds < 3600:
+        mins = max(1, total_seconds // 60)
+        return f"{mins} мин. назад"
+    if msk_dt.date() == now_msk.date():
+        return f"Сегодня, {time_str}"
+    if msk_dt.date() == (now_msk - timedelta(days=1)).date():
+        return f"Вчера, {time_str}"
+    return msk_dt.strftime("%d.%m.%Y, %H:%M MSK")
+
+
 vps_telemetry_cache = {}
 
 
@@ -335,8 +570,56 @@ async def sync_upstream_telemetry():
                             v_fetch = v_data.get("fetch_count", 0)
                             res = await session_db.execute(select(User).where(User.sub_token == token))
                             u = res.scalar_one_or_none()
-                            if u and (u.sub_sync_count or 0) < v_fetch:
-                                u.sub_sync_count = v_fetch
+                            if u:
+                                if (u.sub_sync_count or 0) < v_fetch:
+                                    u.sub_sync_count = v_fetch
+
+                                # Синхронизируем устройства пользователя с VPS
+                                v_devices = v_data.get("devices", {})
+                                for dev_key, dev_info in v_devices.items():
+                                    raw_ua = dev_info.get("ua", "")
+                                    raw_title = dev_info.get("title", "")
+                                    last_seen_str = dev_info.get("last_seen", "")
+
+                                    # Отфильтровываем внутренний шлюз Railway и пустые записи
+                                    if "NoVPN-Railway-Gateway" in raw_ua or "NoVPN-Railway-Gateway" in raw_title:
+                                        continue
+                                    if not raw_ua and not raw_title:
+                                        continue
+
+                                    badge = parse_device_badge(model="", os_name="", ua=raw_ua, raw_title=raw_title)
+                                    dev_fp = f"vps:{dev_key}:{hashlib.sha256(raw_ua.encode('utf-8')).hexdigest()[:8]}"
+
+                                    dt_last = None
+                                    if last_seen_str:
+                                        try:
+                                            dt_last = datetime.strptime(last_seen_str, "%Y-%m-%d %H:%M:%S")
+                                        except Exception:
+                                            dt_last = datetime.utcnow()
+                                    else:
+                                        dt_last = datetime.utcnow()
+
+                                    existing_res = await session_db.execute(
+                                        select(UserDevice).where(
+                                            UserDevice.sub_token == token,
+                                            (UserDevice.device_fp == dev_fp) | (UserDevice.device_label == badge)
+                                        )
+                                    )
+                                    dev_obj = existing_res.scalar_one_or_none()
+                                    if dev_obj:
+                                        dev_obj.device_label = badge
+                                        if dt_last and (not dev_obj.last_seen or dev_obj.last_seen < dt_last):
+                                            dev_obj.last_seen = dt_last
+                                    else:
+                                        new_dev = UserDevice(
+                                            user_id=u.id,
+                                            sub_token=token,
+                                            device_fp=dev_fp,
+                                            device_label=badge,
+                                            first_seen=dt_last,
+                                            last_seen=dt_last,
+                                        )
+                                        session_db.add(new_dev)
                         await session_db.commit()
                     logger.info(f"[Telemetry] Синхронизирована телеметрия с VPS: {len(vps_users)} подписок.")
     except Exception as e:
@@ -652,6 +935,67 @@ async def callback_admin_dashboard(callback: types.CallbackQuery):
     await callback.answer()
 
 
+async def build_users_list_message(session: AsyncSession) -> str:
+    """
+    Формирует премиальный карточный интерфейс со структурированным деревом устройств (├, │, └).
+    """
+    res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
+    users = res.scalars().all()
+
+    header = "👥 <b>Действующие пользователи NoVPN:</b>\n"
+    cards = []
+
+    for u in users:
+        is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
+        status_tag = "👑 <i>ADMIN</i>" if is_admin_user else ("🟢 <i>АКТИВЕН</i>" if u.is_active == 1 else "⏳ <i>ОЖИДАНИЕ</i>")
+        name = html.escape(u.first_name or u.username or "Пользователь")
+        uname = f" (@{u.username})" if u.username else ""
+        syncs = u.sub_sync_count or 0
+
+        # Получаем зарегистрированные слоты устройств из базы данных
+        dev_res = await session.execute(
+            select(UserDevice).where(UserDevice.sub_token == u.sub_token).order_by(UserDevice.last_seen.desc())
+        )
+        u_devices = dev_res.scalars().all()
+
+        user_quota = getattr(u, "max_devices", None) or DEFAULT_MAX_DEVICES
+        quota_str = f"<b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"<b>{len(u_devices)}/{user_quota}</b>"
+
+        card_lines = [
+            f"👤 <b>{name}</b>{uname} {status_tag}",
+            f"   ├ 🆔 <code>{u.telegram_id}</code>",
+            f"   ├ 🔄 Трафик: <b>{syncs} syncs</b>",
+            f"   ├ 📱 Слоты: {quota_str}",
+        ]
+
+        if u_devices:
+            for idx, dev in enumerate(u_devices):
+                is_last_dev = (idx == len(u_devices) - 1)
+                dev_prefix = "   └" if is_last_dev else "   ├"
+                dev_sub_prefix = "      └" if is_last_dev else "   │  └"
+
+                dev_title = html.escape(dev.device_label or "📱 Устройство")
+                time_ago = format_time_ago(dev.last_seen)
+                card_lines.append(f"{dev_prefix} {dev_title}")
+                card_lines.append(f"{dev_sub_prefix} ⏱ <i>{time_ago}</i>")
+        else:
+            card_lines.append("   └ 💤 <i>Устройства еще не подключены</i>")
+
+        cards.append("\n".join(card_lines))
+
+    separator = "\n\n" + "─" * 28 + "\n\n"
+    body = separator.join(cards)
+
+    footer = (
+        f"\n\n{'─' * 28}\n"
+        f"📊 <b>Всего пользователей:</b> {len(users)}\n"
+        f"⚙️ <i>Сброс слотов:</i> <code>/clear_devices &lt;id&gt;</code>\n"
+        f"🚫 <i>Блокировка:</i> <code>/ban &lt;id&gt;</code>"
+    )
+
+    return f"{header}\n{body}{footer}"
+
+
 @router.callback_query(F.data == "adm_list_users")
 async def callback_admin_list_users(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -661,39 +1005,15 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
     await sync_upstream_telemetry()
 
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
-        users = res.scalars().all()
+        text = await build_users_list_message(session)
 
-        lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
-        for u in users:
-            status_ico = "🟢" if u.is_active == 1 else "⏳"
-            name = html.escape(u.first_name or u.username or "Пользователь")
-            uname = f"(@{u.username})" if u.username else ""
-            syncs = u.sub_sync_count or 0
-
-            # Получаем зарегистрированные слоты устройств из постоянной БД
-            dev_res = await session.execute(
-                select(UserDevice).where(UserDevice.sub_token == u.sub_token).order_by(UserDevice.last_seen.desc())
-            )
-            u_devices = dev_res.scalars().all()
-            dev_labels = [d.device_label for d in u_devices if d.device_label]
-
-            is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
-            user_quota = getattr(u, "max_devices", None) or DEFAULT_MAX_DEVICES
-            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{user_quota}</b>"
-            dev_info_str = f" [{', '.join(dev_labels)}]" if dev_labels else ""
-
-            lines.append(
-                f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n"
-                f"   ↳ 🔄 <b>{syncs} syncs</b> | {quota_str}{dev_info_str}\n"
-            )
-
-    lines.append("<i>Сброс слотов: <code>/clear_devices &lt;id&gt;</code></i>")
-    lines.append("<i>Блокировка: <code>/ban &lt;id&gt;</code></i>")
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
-    await callback.message.edit_text(text="\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    try:
+        await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    except Exception:
+        pass
     await callback.answer()
 
 
@@ -772,10 +1092,23 @@ async def cmd_clear_devices(message: types.Message):
             await message.answer(f"Пользователь с ID <code>{target_id}</code> не найден.", parse_mode=ParseMode.HTML)
             return
 
+        target_token = target_user.sub_token
         await session.execute(
-            delete(UserDevice).where(UserDevice.sub_token == target_user.sub_token)
+            delete(UserDevice).where(UserDevice.sub_token == target_token)
         )
         await session.commit()
+
+        # Также сбрасываем устройства на апстрим сервере VPS
+        try:
+            async with aiohttp.ClientSession() as vps_sess:
+                headers = {"X-Novpn-Gateway-Secret": UPSTREAM_GATEWAY_SECRET}
+                await vps_sess.get(
+                    f"https://sub.asdqwemary.de5.net:2053/admin/devices/{target_token}/clear",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=4)
+                )
+        except Exception as e:
+            logger.warning(f"[Clear Devices] Ошибка сброса на VPS: {e}")
 
     uname = html.escape(target_user.first_name or target_user.username or 'Пользователь')
     await message.answer(
@@ -833,39 +1166,12 @@ async def cmd_users(message: types.Message):
 
     await sync_upstream_telemetry()
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
-        users = res.scalars().all()
+        text = await build_users_list_message(session)
 
-        lines = ["👥 <b>Действующие пользователи NoVPN:</b>\n"]
-        for u in users:
-            status_ico = "🟢" if u.is_active == 1 else "⏳"
-            name = html.escape(u.first_name or u.username or "Пользователь")
-            uname = f"(@{u.username})" if u.username else ""
-            syncs = u.sub_sync_count or 0
-
-            # Получаем зарегистрированные слоты устройств из базы данных
-            dev_res = await session.execute(
-                select(UserDevice).where(UserDevice.sub_token == u.sub_token).order_by(UserDevice.last_seen.desc())
-            )
-            u_devices = dev_res.scalars().all()
-            dev_labels = [d.device_label for d in u_devices if d.device_label]
-
-            is_admin_user = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
-            user_quota = getattr(u, "max_devices", None) or DEFAULT_MAX_DEVICES
-            quota_str = f"📱 Слоты: <b>{len(u_devices)} (Безлимит)</b>" if is_admin_user else f"📱 Слоты: <b>{len(u_devices)}/{user_quota}</b>"
-            dev_info_str = f" [{', '.join(dev_labels)}]" if dev_labels else ""
-
-            lines.append(
-                f"{status_ico} <b>{name}</b> {uname} — ID: <code>{u.telegram_id}</code>\n"
-                f"   ↳ 🔄 <b>{syncs} syncs</b> | {quota_str}{dev_info_str}\n"
-            )
-
-    lines.append("<i>Сброс слотов: <code>/clear_devices &lt;id&gt;</code></i>")
-    lines.append("<i>Блокировка: <code>/ban &lt;id&gt;</code></i>")
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🔄 Обновить", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
-    await message.answer(text="\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
 
 
 @router.message(Command("status"))
@@ -1447,39 +1753,35 @@ async def check_and_register_device(
     user: User, token: str, request: Request, ua_lower: str, db: AsyncSession
 ) -> tuple[bool, str]:
     """
-    Проверяет и регистрирует устройство.
+    Проверяет и регистрирует устройство с распознаванием оборудования, ОС и клиента.
     - Для администратора (user.role == 'admin' или telegram_id in ADMIN_IDS): ПОЛНЫЙ БЕЗЛИМИТ.
     - Для обычных пользователей: квота до DEFAULT_MAX_DEVICES (5) слотов.
     - TTL автоочистка: удаляет неактивные слоты старше DEVICE_INACTIVE_TTL_DAYS (30 дней).
     Возвращает (is_allowed, device_label).
     """
+    user_agent = request.headers.get("User-Agent", "").strip()
+    if "NoVPN-Railway-Gateway" in user_agent:
+        return True, "Gateway"
+
     is_admin = (user.role == "admin") or (user.telegram_id in ADMIN_IDS)
 
     hwid = request.headers.get("X-Hwid", "").strip()
     device_model = request.headers.get("X-Device-Model", "").strip()
     device_os = request.headers.get("X-Device-Os", "").strip()
 
+    # Если hwid нет в заголовках, пробуем достать из UA Happ: Happ/x.x.x/platform/hwid
+    if not hwid and "happ/" in ua_lower:
+        parts_ua = user_agent.split("/")
+        if len(parts_ua) >= 4 and parts_ua[3].strip():
+            hwid = parts_ua[3].strip()
+
+    label = parse_device_badge(model=device_model, os_name=device_os, ua=user_agent)
+
     if hwid:
         fp = f"hwid:{hwid}"
-        label = f"📱 {device_model or 'Happ'} ({device_os or 'iOS/Android'})".strip()
     else:
-        # Для других клиентов (v2rayNG, Hiddify, Streisand) формируем сигнатуру
         clean_ua = ua_lower.split("/")[0][:32]
         fp = "client:" + hashlib.sha256(clean_ua.encode("utf-8")).hexdigest()[:16]
-        if "v2ray" in clean_ua:
-            label = "🤖 v2rayNG"
-        elif "hiddify" in clean_ua:
-            label = "⚡ Hiddify"
-        elif "streisand" in clean_ua:
-            label = "🍏 Streisand"
-        elif "sing-box" in clean_ua:
-            label = "📦 sing-box"
-        elif "shadowrocket" in clean_ua:
-            label = "🚀 Shadowrocket"
-        elif "clash" in clean_ua:
-            label = "🐱 Clash"
-        else:
-            label = f"💻 {clean_ua.capitalize()}"
 
     # 1. TTL автоочистка: удаляем слоты старше 30 дней
     cutoff = datetime.utcnow() - timedelta(days=DEVICE_INACTIVE_TTL_DAYS)
@@ -1654,10 +1956,14 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
 
     device_model = request.headers.get("X-Device-Model", "").strip()
     device_os = request.headers.get("X-Device-Os", "").strip()
-    if device_model or device_os:
+    if device_model or device_os or user_agent:
         cached = vps_telemetry_cache.setdefault(token, {"devices": {}})
-        dev_title = f"{device_model} ({device_os})".strip(" ()")
-        cached["devices"][dev_title] = {"title": dev_title}
+        parsed_b = parse_device_badge(model=device_model, os_name=device_os, ua=user_agent)
+        cached["devices"][parsed_b] = {
+            "title": parsed_b,
+            "ua": user_agent,
+            "last_seen": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
 
     raw_nodes = [format_banner_node(n) for n in (current_fleet_nodes if current_fleet_nodes else DEDICATED_NODES)]
     raw_payload = "\n".join(raw_nodes)
