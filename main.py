@@ -929,13 +929,15 @@ async def callback_admin_dashboard(callback: types.CallbackQuery):
         f"• Всего синхронизаций конфигураций: <b>{total_syncs}</b>\n\n"
         f"🌐 <b>Узлов в сети:</b> {len(current_fleet_nodes)}\n\n"
         "<i>Команды быстрого управления:</i>\n"
+        "• <code>/links</code> — готовые ссылки подписок для раздачи\n"
         "• <code>/users</code> — список пользователей и устройств\n"
         "• <code>/approve &lt;tg_id&gt;</code> — выдать доступ\n"
         "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ\n"
-        "• <code>/clear_devices &lt;tg_id&gt;</code> — сбросить слоты девайсов"
+        "• <code>/clear_devices &lt;tg_id&gt;</code> — сбросить слоты устройств"
     )
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔗 Ссылки подписок (раздача)", callback_data="adm_sub_links"))
     kb.row(types.InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
     await callback.message.edit_text(text=stats_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
     await callback.answer()
@@ -1014,6 +1016,7 @@ async def callback_admin_list_users(callback: types.CallbackQuery):
         text = await build_users_list_message(session)
 
     kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔗 Получить ссылки подписок", callback_data="adm_sub_links"))
     kb.row(types.InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
     try:
@@ -1154,6 +1157,7 @@ async def cmd_admin(message: types.Message):
         f"• Всего синхронизаций конфигураций: <b>{total_syncs}</b>\n\n"
         f"🌐 <b>Узлов в сети:</b> {len(current_fleet_nodes)}\n\n"
         "<i>Команды быстрого управления:</i>\n"
+        "• <code>/links</code> — готовые ссылки подписок для раздачи\n"
         "• <code>/users</code> — список пользователей и устройств\n"
         "• <code>/approve &lt;tg_id&gt;</code> — выдать доступ\n"
         "• <code>/ban &lt;tg_id&gt;</code> — заблокировать доступ\n"
@@ -1161,6 +1165,7 @@ async def cmd_admin(message: types.Message):
     )
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="👥 Список пользователей", callback_data="adm_list_users"))
+    kb.row(types.InlineKeyboardButton(text="🔗 Ссылки подписок (раздача)", callback_data="adm_sub_links"))
     kb.row(types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu"))
     await message.answer(text=stats_text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
 
@@ -1175,9 +1180,193 @@ async def cmd_users(message: types.Message):
         text = await build_users_list_message(session)
 
     kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔗 Получить ссылки подписок", callback_data="adm_sub_links"))
     kb.row(types.InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
     await message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+
+def build_all_links_message(users: list[User]) -> str:
+    lines = ["📋 <b>Все действующие ссылки подписок NoVPN:</b>\n"]
+    for u in users:
+        if not u.sub_token:
+            continue
+        u_name = html.escape(u.first_name or u.username or "none")
+        u_handle = f" (@{html.escape(u.username)})" if u.username and u.username != "none" else ""
+        sub_url = f"{APP_URL}/sub/{u.sub_token}"
+        happ_url = f"happ://add/{sub_url}"
+        is_admin = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
+        role_label = " 👑 <i>ADMIN</i>" if is_admin else ""
+
+        lines.append(
+            f"👤 <b>{u_name}</b>{u_handle}{role_label} [ID: <code>{u.telegram_id}</code>]\n"
+            f"🔗 <code>{sub_url}</code>\n"
+            f"⚡ Happ 1-click: <code>{happ_url}</code>\n"
+        )
+    lines.append("────────────────────────────")
+    lines.append("<i>💡 Нажмите на любую ссылку в рамке чтобы скопировать.</i>")
+    return "\n".join(lines)
+
+
+def build_single_user_link_card(user: User) -> str:
+    u_name = html.escape(user.first_name or user.username or "none")
+    u_handle = f" (@{html.escape(user.username)})" if user.username and user.username != "none" else ""
+    sub_url = f"{APP_URL}/sub/{user.sub_token}"
+    happ_url = f"happ://add/{sub_url}"
+    is_admin = (user.role == "admin") or (user.telegram_id in ADMIN_IDS)
+    role_label = " 👑 <i>ADMIN</i>" if is_admin else (" 🟢 <i>АКТИВЕН</i>" if user.is_active == 1 else " ⏳ <i>ОЖИДАНИЕ</i>")
+    user_quota = getattr(user, "max_devices", None) or DEFAULT_MAX_DEVICES
+    quota_str = "Безлимит" if is_admin else f"до {user_quota} устройств"
+
+    return (
+        f"🔑 <b>Подписка NoVPN • {u_name}</b>{u_handle}{role_label}\n"
+        f"🆔 ID: <code>{user.telegram_id}</code> | Слоты: <b>{quota_str}</b>\n\n"
+        f"🔗 <b>Универсальная ссылка подписки:</b>\n"
+        f"<code>{sub_url}</code>\n\n"
+        f"⚡ <b>Быстрый импорт в 1 клик (Happ):</b>\n"
+        f"<a href=\"{happ_url}\">👉 Нажмите для добавления в Happ</a>\n"
+        f"Код ссылки Happ: <code>{happ_url}</code>\n\n"
+        f"✈️ <b>Telegram MTProto (без сторонних приложений):</b>\n"
+        f"<a href=\"{MTPROTO_HTTP_LINK}\">👉 Подключить прокси в Telegram</a>\n\n"
+        f"<i>📋 Инструкция для отправки пользователю:</i>\n"
+        f"1. Установите приложение <b>Happ</b> (доступно в App Store и Google Play).\n"
+        f"2. Откройте ссылку подписки в браузере или нажмите ссылку быстрого импорта.\n"
+        f"3. Все 22 скоростных сервера подключатся автоматически."
+    )
+
+
+@router.message(Command("links"))
+@router.message(Command("sublinks"))
+async def cmd_admin_links(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.is_active == 1).order_by(User.id.asc()))
+        users = res.scalars().all()
+
+    kb = InlineKeyboardBuilder()
+    for u in users:
+        u_name = u.first_name or u.username or f"ID {u.telegram_id}"
+        kb.row(types.InlineKeyboardButton(text=f"👤 {u_name}", callback_data=f"adm_link_user:{u.id}"))
+    kb.row(types.InlineKeyboardButton(text="📋 Скопировать ВСЕ ссылки разом", callback_data="adm_links_all"))
+    kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
+
+    text = (
+        "🔗 <b>Панель раздачи подписок NoVPN</b>\n\n"
+        "Выберите пользователя для получения готовой карточки с ссылкой и инструкцией, "
+        "или нажмите <b>Скопировать ВСЕ ссылки</b> для общего списка:"
+    )
+    await message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "adm_sub_links")
+async def callback_admin_sub_links(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.is_active == 1).order_by(User.id.asc()))
+        users = res.scalars().all()
+
+    kb = InlineKeyboardBuilder()
+    for u in users:
+        u_name = u.first_name or u.username or f"ID {u.telegram_id}"
+        kb.row(types.InlineKeyboardButton(text=f"👤 {u_name}", callback_data=f"adm_link_user:{u.id}"))
+    kb.row(types.InlineKeyboardButton(text="📋 Скопировать ВСЕ ссылки разом", callback_data="adm_links_all"))
+    kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
+
+    text = (
+        "🔗 <b>Панель раздачи подписок NoVPN</b>\n\n"
+        "Выберите пользователя для получения готовой карточки с ссылкой и инструкцией, "
+        "или нажмите <b>Скопировать ВСЕ ссылки</b> для общего списка:"
+    )
+    try:
+        await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_links_all")
+async def callback_admin_links_all(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.is_active == 1).order_by(User.id.asc()))
+        users = res.scalars().all()
+
+    text = build_all_links_message(users)
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="👤 Выбрать по пользователю", callback_data="adm_sub_links"))
+    kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
+    try:
+        await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm_link_user:"))
+async def callback_admin_link_user(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    user_db_id = int(callback.data.split(":")[1])
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.id == user_db_id))
+        user = res.scalar_one_or_none()
+
+    if not user or not user.sub_token:
+        await callback.answer("Пользователь не найден или токен отсутствует.", show_alert=True)
+        return
+
+    text = build_single_user_link_card(user)
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="✈️ MTProto прокси в Telegram", url=MTPROTO_HTTP_LINK))
+    kb.row(types.InlineKeyboardButton(text="📱 Сбросить устройства пользователя", callback_data=f"adm_clear_dev_act:{user.telegram_id}"))
+    kb.row(types.InlineKeyboardButton(text="🔙 К списку пользователей", callback_data="adm_sub_links"))
+    kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
+    try:
+        await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm_clear_dev_act:"))
+async def callback_admin_clear_device_act(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    target_tg_id = int(callback.data.split(":")[1])
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.telegram_id == target_tg_id))
+        target_user = res.scalar_one_or_none()
+        if not target_user:
+            await callback.answer("Пользователь не найден.", show_alert=True)
+            return
+
+        target_token = target_user.sub_token
+        await session.execute(
+            delete(UserDevice).where(UserDevice.sub_token == target_token)
+        )
+        await session.commit()
+
+        # Также сбрасываем устройства на апстрим сервере VPS
+        try:
+            async with aiohttp.ClientSession() as vps_sess:
+                headers = {"X-Novpn-Gateway-Secret": UPSTREAM_GATEWAY_SECRET}
+                await vps_sess.get(
+                    f"https://sub.asdqwemary.de5.net:2053/admin/devices/{target_token}/clear",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=4)
+                )
+        except Exception as e:
+            logger.warning(f"[Clear Devices] Ошибка сброса на VPS: {e}")
+
+    await callback.answer(f"✅ Слоты устройств для ID {target_tg_id} успешно сброшены!", show_alert=True)
 
 
 @router.message(Command("status"))
@@ -1430,6 +1619,7 @@ async def setup_bot_commands(bot: Bot):
     admin_cmds = [
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="admin", description="👑 Панель управления"),
+        BotCommand(command="links", description="🔗 Ссылки подписок (раздача)"),
         BotCommand(command="users", description="👥 Список пользователей"),
         BotCommand(command="clear_devices", description="📱 Сбросить устройства пользователя"),
         BotCommand(command="help", description="Инструкция по настройке"),
