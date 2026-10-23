@@ -66,113 +66,30 @@ def make_banner(text_label: str) -> str:
     return f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:0?security=none&encryption=none&type=tcp&headerType=none#{encoded}"
 
 
-def sanitize_node(line: str) -> str:
-    """
-    Очищает и нормализует дескрипторы узлов, полностью скрывая
-    любые упоминания хостинг-провайдеров (Smart Ape, TimeWeb, SberCloud, VK Cloud, Lizeg, Nova)
-    и форматируя разделы в соответствии со стандартами 'Архитектуры ширмы'.
-    """
-    if not line or not line.startswith("vless://"):
-        return line
-
-    parts = line.split("#", 1)
-    base_url = parts[0]
-
-    # Если это баннер-разделитель (127.0.0.1:0), обновляем его оформление
-    if "@127.0.0.1:0" in base_url:
-        old_label = urllib.parse.unquote(parts[1]) if len(parts) > 1 else ""
-        if "амстердам" in old_label.lower():
-            return make_banner("⚡ ─ [ амстердам • 4k direct ] ─")
-        elif "шлюз" in old_label.lower() or "рф" in old_label.lower():
-            return make_banner("🛡️ ─ [ шлюзы рф • ширма 25ms ] ─")
-        elif "резерв" in old_label.lower() or "ес" in old_label.lower():
-            return make_banner("🌍 ─ [ резерв • ес / сша ] ─")
-        return line
-
-    remark = ""
-    # 1. Амстердам 4K Direct (Высокоскоростной кластер)
-    if "186.246.47.218" in base_url:
-        if "sni=faster.lizeg.ru" in base_url:
-            remark = "🇳🇱 novpn • Direct Ultra 4K (Amsterdam #1)"
-        elif "sni=1cdevelopment.ru" in base_url:
-            remark = "🇳🇱 novpn • Direct Business 1C (Amsterdam #2)"
-        elif "sni=www.gazeta-business.ru" in base_url:
-            remark = "🇳🇱 novpn • Direct Retail Edge (Amsterdam #3)"
-        elif "sni=de.lizeg.ru" in base_url:
-            remark = "🇳🇱 novpn • Direct Stealth Net (Amsterdam #4)"
-        elif "e4b52c01" in base_url:
-            remark = "🇪🇺 novpn • Cloudflare Shield 4K (WARP)"
-        else:
-            remark = "🇳🇱 novpn • Direct Ultra 4K (Amsterdam)"
-    # 2. Архитектура ширмы (Экранирующие шлюзы РФ)
-    elif "31.177.111.104" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 01 (Москва L3)"
-    elif "82.202.158.28" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 02 (Москва Vision)"
-    elif "188.225.62.66" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 03 (СПб Fast)"
-    elif "217.199.254.18" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 04 (Москва LTE)"
-    elif "90.156.218.83" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 05 (Москва gRPC)"
-    elif "89.208.230.49" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 06 (Москва Retail)"
-    elif "91.240.86.30" in base_url:
-        remark = "🛡️ novpn • Ширма Шлюз 07 (РФ Резерв)"
-    # 3. Резервные релеи
-    elif any(ip in base_url for ip in ("152.53.236.22", "178.105.168.171")):
-        remark = "🌍 novpn • Резерв DE (Франкфурт)"
-    elif any(ip in base_url for ip in ("212.87.222.10", "83.219.97.18")):
-        remark = "🌍 novpn • Резерв FI (Хельсинки)"
-    elif any(ip in base_url for ip in ("86.54.28.75", "208.67.106.154")):
-        remark = "🌍 novpn • Резерв NL (Амстердам)"
-    elif any(ip in base_url for ip in ("143.246.219.99", "46.250.240.80")):
-        remark = "🌍 novpn • Резерв UK (Лондон)"
-    elif any(ip in base_url for ip in ("145.223.68.58", "51.77.217.70")):
-        remark = "🌍 novpn • Резерв FR (Париж)"
-    elif any(ip in base_url for ip in ("93.89.220.37", "150.241.79.149")):
-        remark = "🌍 novpn • Резерв SE/EE (Северная Европа)"
-    elif any(ip in base_url for ip in ("169.40.42.168", "169.40.42.35")):
-        remark = "🌍 novpn • Резерв US (США)"
-    else:
-        # Для любых динамических узлов полностью вычищаем имена провайдеров
-        existing_remark = urllib.parse.unquote(parts[1]) if len(parts) > 1 else ""
-        cleaned = re.sub(
-            r"(?i)(smart\s*ape|sbercloud|timeweb|vk\s*cloud|jsc\s*iot|lizeg|nova)",
-            "Secure Edge",
-            existing_remark
-        )
-        if not cleaned:
-            cleaned = "novpn • Secure Node"
-        return f"{base_url}#{urllib.parse.quote(cleaned)}"
-
-    return f"{base_url}#{urllib.parse.quote(remark)}"
-
-
 # Эталонный кластер NoVPN (22 проверенных узла с тремя логическими секциями)
 DEDICATED_NODES = [
-    make_banner("⚡ ─ [ амстердам • 4k direct ] ─"),
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=faster.lizeg.ru&sid=50#%E2%9A%A1%20novpn%20%E2%80%A2%20Direct%20Ultra%204K%20%28Amsterdam%20%231%29",
-    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%204K%20%28WARP%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=www.gazeta-business.ru&sid=50#%E2%9A%A1%20novpn%20%E2%80%A2%20Direct%20Retail%20Edge%20%28Amsterdam%20%233%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%E2%9A%A1%20novpn%20%E2%80%A2%20Direct%20Business%201C%20%28Amsterdam%20%232%29",
-    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%E2%9A%A1%20novpn%20%E2%80%A2%20Direct%20Stealth%20Net%20%28Amsterdam%20%234%29",
-    make_banner("🛡️ ─ [ шлюзы рф • ширма 25ms ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2001%20%28%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0%20L3%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2002%20%28%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0%20Vision%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2003%20%28%D0%A1%D0%9F%D0%B1%20Fast%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@217.199.254.18:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=keycdn.com&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2004%20%28%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0%20LTE%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2005%20%28%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0%20gRPC%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=gazeta-business.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2006%20%28%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0%20Retail%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@91.240.86.30:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%9B%A1%EF%B8%8F%20novpn%20%E2%80%A2%20%D0%A8%D0%B8%D1%80%D0%BC%D0%B0%20%D0%A8%D0%BB%D1%8E%D0%B7%2007%20%28%D0%A0%D0%A4%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%29",
+    make_banner("⚡ ─ [ амстердам • 4k ] ─"),
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=faster.lizeg.ru&sid=50#%F0%9F%87%B3%F0%9F%87%B1%20novpn%20%E2%80%A2%20Direct%20Ultra%20%28Amsterdam%29",
+    "vless://e4b52c01-79b8-4d5c-9c98-1f5e8c187e02@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%AA%F0%9F%87%BA%20novpn%20%E2%80%A2%20Cloudflare%20Shield%20%28WARP%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=www.gazeta-business.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Retail%20Edge%20%28X5%20Group%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=1cdevelopment.ru&sid=50#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Business%20%281C%20Enterprise%29",
+    "vless://29e6cdd5-db74-43a9-870f-a74e630a4faf@186.246.47.218:443?security=reality&encryption=none&pbk=QZ-K_mgnEvdfSPzZ4fCokkeDAXH91zO1hq4S4QNOtF8&headerType=none&fp=qq&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=de.lizeg.ru&sid=50#%F0%9F%87%A9%F0%9F%87%AA%20novpn%20%E2%80%A2%20Alternative%20%28Lizeg%29",
+    make_banner("🛡️ ─ [ шлюзы рф • 25ms ] ─"),
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@31.177.111.104:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20Smart%20Ape%20%28L3%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@82.202.158.28:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=keycdn.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20SberCloud",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@188.225.62.66:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28Fast%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@217.199.254.18:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=keycdn.com&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20TimeWeb%20%28LTE%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@90.156.218.83:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28gRPC%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@89.208.230.49:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=gazeta-business.ru&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20VK%20Cloud%20%28X5%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@91.240.86.30:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=grpc&sni=www.gazeta-business.ru&sid=50&serviceName=ads.x5.ru&mode=gun#%F0%9F%87%B7%F0%9F%87%BA%20novpn%20%E2%80%A2%20JSC%20IOT",
     make_banner("🌍 ─ [ резерв • ес / сша ] ─"),
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@152.53.236.22:443?security=reality&encryption=none&pbk=7_3QW1h6XgI2rZ9bI_d8b3h7Z7n_u9X0&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20DE%20%28%D0%A4%D1%80%D0%B0%D0%BD%D0%BA%D1%84%D1%83%D1%80%D1%82%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@212.87.222.10:8443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.nokia.com&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20FI%20%28%D0%A5%D0%B5%D0%BB%D1%8C%D1%81%D0%B8%D0%BD%D0%BA%D0%B8%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@86.54.28.75:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.tradingview.com&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20NL%20%28%D0%90%D0%BC%D1%81%D1%82%D0%B5%D1%80%D0%B4%D0%B0%D0%BC%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@143.246.219.99:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.vodafone.co.uk&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20UK%20%28%D0%9B%D0%BE%D0%BD%D0%B4%D0%BE%D0%BD%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@145.223.68.58:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20FR%20%28%D0%9F%D0%B0%D1%80%D0%B8%D0%B6%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@93.89.220.37:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=ibm.com&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20EE%20%28%D0%A2%D0%B0%D0%BB%D0%BB%D0%B8%D0%BD%29",
-    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@169.40.42.168:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=yahoo.com&sid=50&flow=xtls-rprx-vision#%F0%9F%8C%8D%20novpn%20%E2%80%A2%20%D0%A0%D0%B5%D0%B7%D0%B5%D1%80%D0%B2%20US%20%28%D0%9D%D1%8C%D1%8E-%D0%99%D0%BE%D1%80%D0%BA%29",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@152.53.236.22:443?security=reality&encryption=none&pbk=7_3QW1h6XgI2rZ9bI_d8b3h7Z7n_u9X0&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20Relay%20%E2%80%A2%20Germany",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@212.87.222.10:8443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.nokia.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%AE%20Relay%20%E2%80%A2%20Finland",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@86.54.28.75:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.tradingview.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B3%F0%9F%87%B1%20Relay%20%E2%80%A2%20Netherlands",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@143.246.219.99:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.vodafone.co.uk&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AC%F0%9F%87%A7%20Relay%20%E2%80%A2%20United%20Kingdom",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@145.223.68.58:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=www.cloudflare.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%AB%F0%9F%87%B7%20Relay%20%E2%80%A2%20France",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@93.89.220.37:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=ibm.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%B8%F0%9F%87%AA%20Relay%20%E2%80%A2%20Sweden",
+    "vless://699f307f-c4e2-4994-8401-15e7e6d8c0b4@169.40.42.168:443?security=reality&encryption=none&pbk=-tePObR3oZwGAUOb5kqTYkNWl6rtUKl0RFuzuu06wgw&headerType=none&fp=qq&spx=%2F&type=tcp&sni=yahoo.com&sid=50&flow=xtls-rprx-vision#%F0%9F%87%BA%F0%9F%87%B8%20Relay%20%E2%80%A2%20United%20States",
 ]
 
 # Кэш актуального флота
@@ -405,8 +322,8 @@ async def sync_upstream_fleet():
 
                     vless_nodes = [l for l in lines if l.startswith("vless://")]
                     if len(vless_nodes) >= 10:
-                        current_fleet_nodes = [sanitize_node(l) for l in lines]
-                        logger.info(f"[Fleet] Обновлен и санитизирован флот с VPS: {len(current_fleet_nodes)} строк ({len(vless_nodes)} нод).")
+                        current_fleet_nodes = [l.strip() for l in lines if l.strip()]
+                        logger.info(f"[Fleet] Обновлен флот с VPS: {len(current_fleet_nodes)} строк ({len(vless_nodes)} нод).")
     except Exception as e:
         logger.warning(f"[Fleet] Синхронизация флота с VPS временно недоступна ({e}). Используется локальный эталон.")
 
@@ -1682,8 +1599,7 @@ async def get_subscription(token: str, request: Request, db: AsyncSession = Depe
         cached["devices"][dev_title] = {"title": dev_title}
 
     raw_nodes = list(current_fleet_nodes) if current_fleet_nodes else list(DEDICATED_NODES)
-    clean_nodes = [sanitize_node(n) for n in raw_nodes]
-    raw_payload = "\n".join(clean_nodes)
+    raw_payload = "\n".join(raw_nodes)
     encoded = base64.b64encode(raw_payload.encode("utf-8")).decode("utf-8")
 
     headers = {
