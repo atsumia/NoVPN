@@ -184,7 +184,7 @@ MTPROTO_HTTP_LINK = "https://t.me/proxy?server=tg.asdqwemary.de5.net&port=8443&s
 
 UPSTREAM_FLEET_URL = os.getenv(
     "UPSTREAM_FLEET_URL",
-    "https://sub.asdqwemary.de5.net/sub/4305d56015dfcf2b27d4d495865a8326?raw=1"
+    "https://sub.asdqwemary.de5.net:2053/sub/4305d56015dfcf2b27d4d495865a8326?raw=1"
 )
 
 
@@ -357,7 +357,7 @@ async def init_db():
 
 UPSTREAM_STATS_URL = os.getenv(
     "UPSTREAM_STATS_URL",
-    "https://sub.asdqwemary.de5.net/admin/stats"
+    "https://sub.asdqwemary.de5.net:2053/admin/stats"
 )
 vps_telemetry_cache = {}
 
