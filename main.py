@@ -130,6 +130,7 @@ UPSTREAM_GATEWAY_SECRET = os.getenv(
 
 DEFAULT_MAX_DEVICES = 5
 DEVICE_INACTIVE_TTL_DAYS = 30
+PROVISIONAL_DEVICE_TTL_HOURS = 2  # Однократные тесты / случайные пробы живут не более 2 часов без подтверждения (sync_count >= 2)
 
 
 class User(Base):
@@ -174,6 +175,7 @@ class UserDevice(Base):
     sub_token = Column(String, index=True, nullable=False)
     device_fp = Column(String, index=True, nullable=False)
     device_label = Column(String, nullable=True)
+    sync_count = Column(Integer, default=1)
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
 
@@ -308,6 +310,12 @@ async def init_db():
         # Устраняем дубликаты пользователей по sub_token если они возникли
         try:
             await conn.execute(text("DELETE FROM users WHERE id NOT IN (SELECT MAX(id) FROM users GROUP BY sub_token);"))
+        except Exception:
+            pass
+
+        # Миграция схемы: добавление sync_count в user_devices если отсутствует
+        try:
+            await conn.execute(text("ALTER TABLE user_devices ADD COLUMN sync_count INTEGER DEFAULT 1;"))
         except Exception:
             pass
 
@@ -611,12 +619,27 @@ async def deduplicate_user_devices(session: AsyncSession, sub_token: str | None 
     """
     Устраняет дублирование слотов устройств (одинаковые платформы/компьютеры/телефоны за разные дни),
     оставляя единственную наиболее точную запись с самым свежим временем активности.
-    Также очищает паразитные админские устройства с карточек обычных пользователей.
+    Также очищает случайные однократные тесты (sync_count <= 1 старше 2 часов) для ВСЕХ пользователей.
     """
+    # 1. Системная очистка однократных тестов / случайных кликов (sync_count <= 1 старше PROVISIONAL_DEVICE_TTL_HOURS)
+    provisional_cutoff = datetime.utcnow() - timedelta(hours=PROVISIONAL_DEVICE_TTL_HOURS)
+    await session.execute(
+        delete(UserDevice).where(
+            (UserDevice.sync_count <= 1) | (UserDevice.sync_count.is_(None)),
+            UserDevice.last_seen < provisional_cutoff
+        )
+    )
+
+    # 2. TTL очистка неактивных устройств старше DEVICE_INACTIVE_TTL_DAYS (30 дней)
+    cutoff_30d = datetime.utcnow() - timedelta(days=DEVICE_INACTIVE_TTL_DAYS)
+    await session.execute(
+        delete(UserDevice).where(UserDevice.last_seen < cutoff_30d)
+    )
+
     admin_tokens = [u.get("sub_token") for u in KNOWN_FLEET_USERS if u.get("role") == "admin" or u.get("id") in ADMIN_IDS]
     admin_tokens = [t for t in admin_tokens if t]
 
-    # 1. Жесткая зачистка паразитного админского айфона с других пользователей
+    # 3. Жесткая зачистка паразитного админского айфона с других пользователей
     await session.execute(
         delete(UserDevice).where(
             ~UserDevice.sub_token.in_(admin_tokens),
@@ -629,7 +652,7 @@ async def deduplicate_user_devices(session: AsyncSession, sub_token: str | None 
         )
     )
 
-    # 2. Выборка целевых устройств для дедупликации
+    # 4. Выборка целевых устройств для дедупликации
     query = select(UserDevice)
     if sub_token:
         query = query.where(UserDevice.sub_token == sub_token)
@@ -659,6 +682,9 @@ async def deduplicate_user_devices(session: AsyncSession, sub_token: str | None 
         min_first_seen = min((d.first_seen for d in dev_list if d.first_seen), default=datetime.utcnow())
         best_dev.last_seen = max_last_seen
         best_dev.first_seen = min_first_seen
+
+        total_syncs = sum(getattr(d, "sync_count", 1) or 1 for d in dev_list)
+        best_dev.sync_count = max(best_dev.sync_count or 1, total_syncs)
 
         # Сохраняем HWID в device_fp если он был в одном из дубликатов
         for d in dev_list:
@@ -745,17 +771,20 @@ async def sync_upstream_telemetry():
                                             dev_obj = d
                                             break
 
+                                    vps_sync_count = int(dev_info.get("sync_count", 1) or 1)
                                     if dev_obj:
                                         if label_quality_score(badge) > label_quality_score(dev_obj.device_label or ""):
                                             dev_obj.device_label = badge
                                         if dt_last and (not dev_obj.last_seen or dev_obj.last_seen < dt_last):
                                             dev_obj.last_seen = dt_last
+                                        dev_obj.sync_count = max(getattr(dev_obj, "sync_count", 1) or 1, vps_sync_count)
                                     else:
                                         new_dev = UserDevice(
                                             user_id=u.id,
                                             sub_token=token,
                                             device_fp=vps_fp,
                                             device_label=badge,
+                                            sync_count=vps_sync_count,
                                             first_seen=dt_last,
                                             last_seen=dt_last,
                                         )
@@ -1120,7 +1149,8 @@ async def build_users_list_message(session: AsyncSession) -> str:
 
                 dev_title = html.escape(dev.device_label or "📱 Устройство")
                 time_ago = format_time_ago(dev.last_seen)
-                card_lines.append(f"{dev_prefix} {dev_title}")
+                status_suffix = "" if (getattr(dev, "sync_count", 1) or 1) >= 2 else " ⏳ <i>(на проверке)</i>"
+                card_lines.append(f"{dev_prefix} {dev_title}{status_suffix}")
                 card_lines.append(f"{dev_sub_prefix} ⏱ <i>{time_ago}</i>")
         else:
             card_lines.append("   └ 💤 <i>Устройства еще не подключены</i>")
@@ -2132,10 +2162,18 @@ async def check_and_register_device(
         clean_ua = ua_lower.split("/")[0][:32]
         fp = "client:" + hashlib.sha256(clean_ua.encode("utf-8")).hexdigest()[:16]
 
-    # 1. TTL автоочистка: удаляем слоты старше 30 дней
-    cutoff = datetime.utcnow() - timedelta(days=DEVICE_INACTIVE_TTL_DAYS)
+    # 1. TTL автоочистка: удаляем неактивные подтвержденные устройства старше 30 дней
+    # и однократные пробы (sync_count <= 1) старше PROVISIONAL_DEVICE_TTL_HOURS (2 часов)
+    provisional_cutoff = datetime.utcnow() - timedelta(hours=PROVISIONAL_DEVICE_TTL_HOURS)
+    cutoff_30d = datetime.utcnow() - timedelta(days=DEVICE_INACTIVE_TTL_DAYS)
     await db.execute(
-        delete(UserDevice).where(UserDevice.sub_token == token, UserDevice.last_seen < cutoff)
+        delete(UserDevice).where(
+            UserDevice.sub_token == token,
+            (
+                (UserDevice.last_seen < cutoff_30d) |
+                (((UserDevice.sync_count <= 1) | (UserDevice.sync_count.is_(None))) & (UserDevice.last_seen < provisional_cutoff))
+            )
+        )
     )
 
     # 2. Интеллектуальный поиск существующего слота устройства
@@ -2151,6 +2189,7 @@ async def check_and_register_device(
             break
 
     if matching_dev:
+        matching_dev.sync_count = (matching_dev.sync_count or 1) + 1
         matching_dev.last_seen = datetime.utcnow()
         if label and label_quality_score(label) >= label_quality_score(matching_dev.device_label or ""):
             matching_dev.device_label = label
@@ -2162,7 +2201,13 @@ async def check_and_register_device(
     # 3. Если устройство новое: проверяем квоту для не-админов
     if not is_admin_user:
         count_res = await db.execute(
-            select(func.count(UserDevice.id)).where(UserDevice.sub_token == token)
+            select(func.count(UserDevice.id)).where(
+                UserDevice.sub_token == token,
+                ~(
+                    ((UserDevice.sync_count <= 1) | (UserDevice.sync_count.is_(None))) &
+                    (UserDevice.last_seen < provisional_cutoff)
+                )
+            )
         )
         active_count = count_res.scalar_one() or 0
         user_max_devices = getattr(user, "max_devices", None) or DEFAULT_MAX_DEVICES
@@ -2179,12 +2224,13 @@ async def check_and_register_device(
         sub_token=token,
         device_fp=fp,
         device_label=label,
+        sync_count=1,
         first_seen=datetime.utcnow(),
         last_seen=datetime.utcnow(),
     )
     db.add(new_dev)
     await db.commit()
-    logger.info(f"[Device Added] Новый слот устройства для user_id={user.telegram_id}: '{label}'")
+    logger.info(f"[Device Added] Новый слот устройства (1-я синхронизация) для user_id={user.telegram_id}: '{label}'")
     return True, label
 
 
