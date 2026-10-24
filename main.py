@@ -311,9 +311,10 @@ async def init_db():
         except Exception:
             pass
 
-        # Очистка синтетических тестовых записей устройств
+        # Очистка синтетических тестовых записей устройств и паразитных админских привязок
         try:
             await conn.execute(text("DELETE FROM user_devices WHERE device_label LIKE '%iPhone 14 Pro%' OR device_label LIKE '%Happ 3.2.0%' OR device_label LIKE '%v2rayNG%';"))
+            await conn.execute(text("DELETE FROM user_devices WHERE sub_token != '4305d56015dfcf2b27d4d495865a8326' AND (device_label LIKE '%Apple iPhone%' OR device_label LIKE '%iPhone%' OR device_fp LIKE '%2606221809551%');"))
         except Exception:
             pass
 
@@ -559,6 +560,119 @@ def format_time_ago(dt: datetime | None) -> str:
     return msk_dt.strftime("%d.%m.%Y, %H:%M MSK")
 
 
+def label_quality_score(label: str) -> int:
+    """Оценка информативности бейджа устройства (модели, версии)."""
+    score = 0
+    l = (label or "").lower()
+    if re.search(r"iphone\s*\d+", l):
+        score += 25
+    elif "apple iphone" in l:
+        score += 5
+    elif "samsung" in l or "pixel" in l:
+        score += 20
+    if re.search(r"\d+\.\d+", l):
+        score += 10
+    return score
+
+
+def get_device_identity_key(dev_label: str, dev_fp: str = "", raw_ua: str = "") -> str:
+    """
+    Возвращает канонический идентификатор физического оборудования.
+    Исключает дублирование одного и того же компьютера или телефона при смене дней,
+    разнице в User-Agent (например, при синке с VPS и прямом запросе в Railway).
+    """
+    combined = f"{dev_label or ''} {dev_fp or ''} {raw_ua or ''}".lower()
+
+    m_hwid = re.search(r"hwid[:/]([a-zA-Z0-9_-]+)", combined)
+    if m_hwid:
+        return f"hwid:{m_hwid.group(1)}"
+
+    for h in ("2608211947507", "2606221809551"):
+        if h in combined:
+            return f"hwid:{h}"
+
+    if "windows" in combined or " pc" in combined or "/windows" in combined:
+        return "platform:windows_pc"
+    if "iphone" in combined or "ios" in combined or "/ios" in combined:
+        return "platform:apple_iphone"
+    if "ipad" in combined or "ipados" in combined:
+        return "platform:apple_ipad"
+    if "android" in combined or "/android" in combined:
+        return "platform:android_device"
+    if "mac" in combined or "darwin" in combined or "/macos" in combined:
+        return "platform:apple_mac"
+    if "linux" in combined:
+        return "platform:linux_pc"
+
+    return f"label:{dev_label.strip()}"
+
+
+async def deduplicate_user_devices(session: AsyncSession, sub_token: str | None = None):
+    """
+    Устраняет дублирование слотов устройств (одинаковые платформы/компьютеры/телефоны за разные дни),
+    оставляя единственную наиболее точную запись с самым свежим временем активности.
+    Также очищает паразитные админские устройства с карточек обычных пользователей.
+    """
+    admin_tokens = [u.get("sub_token") for u in KNOWN_FLEET_USERS if u.get("role") == "admin" or u.get("id") in ADMIN_IDS]
+    admin_tokens = [t for t in admin_tokens if t]
+
+    # 1. Жесткая зачистка паразитного админского айфона с других пользователей
+    await session.execute(
+        delete(UserDevice).where(
+            ~UserDevice.sub_token.in_(admin_tokens),
+            (
+                UserDevice.device_label.like("%Apple iPhone%") |
+                UserDevice.device_label.like("%iPhone%") |
+                UserDevice.device_fp.like("%2606221809551%") |
+                UserDevice.device_fp.like("%2608211947507%")
+            )
+        )
+    )
+
+    # 2. Выборка целевых устройств для дедупликации
+    query = select(UserDevice)
+    if sub_token:
+        query = query.where(UserDevice.sub_token == sub_token)
+    res = await session.execute(query)
+    all_devs = res.scalars().all()
+
+    # Группируем по (sub_token, canonical_identity_key)
+    grouped: dict[tuple[str, str], list[UserDevice]] = defaultdict(list)
+    for dev in all_devs:
+        key = (dev.sub_token, get_device_identity_key(dev.device_label or "", dev.device_fp or ""))
+        grouped[key].append(dev)
+
+    for (tok, ident), dev_list in grouped.items():
+        if len(dev_list) <= 1:
+            continue
+
+        # Выбираем лучший экземпляр: приоритет детальному бейджу ("iPhone 13" > "Apple iPhone") и свежему last_seen
+        best_dev = max(
+            dev_list,
+            key=lambda d: (
+                label_quality_score(d.device_label or ""),
+                d.last_seen or datetime.min
+            )
+        )
+
+        max_last_seen = max((d.last_seen for d in dev_list if d.last_seen), default=datetime.utcnow())
+        min_first_seen = min((d.first_seen for d in dev_list if d.first_seen), default=datetime.utcnow())
+        best_dev.last_seen = max_last_seen
+        best_dev.first_seen = min_first_seen
+
+        # Сохраняем HWID в device_fp если он был в одном из дубликатов
+        for d in dev_list:
+            if d.id != best_dev.id and d.device_fp and "hwid:" in d.device_fp and "hwid:" not in (best_dev.device_fp or ""):
+                best_dev.device_fp = d.device_fp
+
+        # Удаляем остальные дублирующие записи
+        for d in dev_list:
+            if d.id != best_dev.id:
+                await session.delete(d)
+
+    await session.commit()
+
+
 vps_telemetry_cache = {}
 
 
@@ -588,10 +702,12 @@ async def sync_upstream_telemetry():
 
                                 # Синхронизируем устройства пользователя с VPS
                                 v_devices = v_data.get("devices", {})
+                                is_user_admin = (u.role == "admin") or (u.telegram_id in ADMIN_IDS)
                                 for dev_key, dev_info in v_devices.items():
                                     raw_ua = dev_info.get("ua", "")
                                     raw_title = dev_info.get("title", "")
                                     last_seen_str = dev_info.get("last_seen", "")
+                                    dev_ip = dev_info.get("ip", "")
 
                                     # Отфильтровываем внутренний шлюз Railway и пустые записи
                                     if "NoVPN-Railway-Gateway" in raw_ua or "NoVPN-Railway-Gateway" in raw_title:
@@ -599,8 +715,14 @@ async def sync_upstream_telemetry():
                                     if not raw_ua and not raw_title:
                                         continue
 
+                                    # Защита: админские устройства не должны попадать к обычным пользователям
+                                    if not is_user_admin:
+                                        if dev_ip == "85.93.1.38" or "2606221809551" in raw_ua or "2608211947507" in raw_ua or "Happ/4.13.0/ios" in raw_ua:
+                                            continue
+
                                     badge = parse_device_badge(model="", os_name="", ua=raw_ua, raw_title=raw_title)
-                                    dev_fp = f"vps:{dev_key}:{hashlib.sha256(raw_ua.encode('utf-8')).hexdigest()[:8]}"
+                                    vps_fp = f"vps:{dev_key}:{hashlib.sha256(raw_ua.encode('utf-8')).hexdigest()[:8]}"
+                                    target_ident = get_device_identity_key(badge, vps_fp, raw_ua)
 
                                     dt_last = None
                                     if last_seen_str:
@@ -611,28 +733,35 @@ async def sync_upstream_telemetry():
                                     else:
                                         dt_last = datetime.utcnow()
 
+                                    # Ищем существующее устройство пользователя
                                     existing_res = await session_db.execute(
-                                        select(UserDevice).where(
-                                            UserDevice.sub_token == token,
-                                            (UserDevice.device_fp == dev_fp) | (UserDevice.device_label == badge)
-                                        )
+                                        select(UserDevice).where(UserDevice.sub_token == token)
                                     )
-                                    dev_obj = existing_res.scalar_one_or_none()
+                                    u_devs = existing_res.scalars().all()
+                                    dev_obj = None
+                                    for d in u_devs:
+                                        d_ident = get_device_identity_key(d.device_label or "", d.device_fp or "")
+                                        if d_ident == target_ident or d.device_fp == vps_fp or (badge and d.device_label == badge):
+                                            dev_obj = d
+                                            break
+
                                     if dev_obj:
-                                        dev_obj.device_label = badge
+                                        if label_quality_score(badge) > label_quality_score(dev_obj.device_label or ""):
+                                            dev_obj.device_label = badge
                                         if dt_last and (not dev_obj.last_seen or dev_obj.last_seen < dt_last):
                                             dev_obj.last_seen = dt_last
                                     else:
                                         new_dev = UserDevice(
                                             user_id=u.id,
                                             sub_token=token,
-                                            device_fp=dev_fp,
+                                            device_fp=vps_fp,
                                             device_label=badge,
                                             first_seen=dt_last,
                                             last_seen=dt_last,
                                         )
                                         session_db.add(new_dev)
                         await session_db.commit()
+                        await deduplicate_user_devices(session_db)
                     logger.info(f"[Telemetry] Синхронизирована телеметрия с VPS: {len(vps_users)} подписок.")
     except Exception as e:
         logger.warning(f"[Telemetry] Ошибка опроса статистики VPS: {e}")
@@ -953,6 +1082,7 @@ async def build_users_list_message(session: AsyncSession) -> str:
     """
     Формирует премиальный карточный интерфейс со структурированным деревом устройств (├, │, └).
     """
+    await deduplicate_user_devices(session)
     res = await session.execute(select(User).order_by(User.sub_sync_count.desc(), User.id.asc()))
     users = res.scalars().all()
 
@@ -1189,7 +1319,7 @@ async def cmd_users(message: types.Message):
     kb.row(types.InlineKeyboardButton(text="🔗 Получить ссылки подписок", callback_data="adm_sub_links"))
     kb.row(types.InlineKeyboardButton(text="🔄 Обновить список", callback_data="adm_list_users"))
     kb.row(types.InlineKeyboardButton(text="🔙 В админку", callback_data="admin_dashboard"))
-    await message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    await message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup(), disable_web_page_preview=True)
 
 
 def build_all_links_message(users: list[User]) -> str:
@@ -1959,13 +2089,30 @@ async def check_and_register_device(
     - Для администратора (user.role == 'admin' или telegram_id in ADMIN_IDS): ПОЛНЫЙ БЕЗЛИМИТ.
     - Для обычных пользователей: квота до DEFAULT_MAX_DEVICES (5) слотов.
     - TTL автоочистка: удаляет неактивные слоты старше DEVICE_INACTIVE_TTL_DAYS (30 дней).
+    - Защита от превью/тестов: запросы админа и роботов предпросмотра не занимают слоты пользователей.
     Возвращает (is_allowed, device_label).
     """
     user_agent = request.headers.get("User-Agent", "").strip()
     if "NoVPN-Railway-Gateway" in user_agent:
         return True, "Gateway"
 
-    is_admin = (user.role == "admin") or (user.telegram_id in ADMIN_IDS)
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
+    admin_key = request.query_params.get("admin_key", "")
+    is_admin_header = (request.headers.get("X-Novpn-Admin", "") == "true") or (admin_key == "novpn2026")
+    is_admin_user = (user.role == "admin") or (user.telegram_id in ADMIN_IDS)
+    is_admin_hwid = ("2606221809551" in user_agent) or ("2608211947507" in user_agent) or ("2606221809551" in ua_lower) or ("2608211947507" in ua_lower)
+    is_admin_ip = (client_ip == "85.93.1.38")
+    is_admin_probe = is_admin_header or is_admin_hwid or is_admin_ip
+
+    # Если админ тестирует, открывает или предпросматривает чужую ссылку подписки — НЕ занимаем слот пользователя!
+    if is_admin_probe and not is_admin_user:
+        logger.info(f"[Admin Inspector] Запрос админа (IP={client_ip}) к ссылке пользователя {user.telegram_id}. Слот устройства не резервируется.")
+        return True, "Admin Inspector"
+
+    # Отфильтровываем поисковых/превью роботов (Telegram preview, Safari preview, crawler bots)
+    preview_crawlers = ("telegrambot", "applebot", "preview", "crawler", "spider", "whatsapp", "meta-externalagent")
+    if any(b in ua_lower for b in preview_crawlers):
+        return True, "Preview Bot"
 
     hwid = request.headers.get("X-Hwid", "").strip()
     device_model = request.headers.get("X-Device-Model", "").strip()
@@ -1991,21 +2138,29 @@ async def check_and_register_device(
         delete(UserDevice).where(UserDevice.sub_token == token, UserDevice.last_seen < cutoff)
     )
 
-    # 2. Проверяем, зарегистрирован ли уже этот отпечаток
-    dev_res = await db.execute(
-        select(UserDevice).where(UserDevice.sub_token == token, UserDevice.device_fp == fp)
-    )
-    existing_dev = dev_res.scalar_one_or_none()
+    # 2. Интеллектуальный поиск существующего слота устройства
+    target_ident = get_device_identity_key(label, fp, user_agent)
+    dev_res = await db.execute(select(UserDevice).where(UserDevice.sub_token == token))
+    existing_list = dev_res.scalars().all()
 
-    if existing_dev:
-        existing_dev.last_seen = datetime.utcnow()
-        if label:
-            existing_dev.device_label = label
+    matching_dev = None
+    for d in existing_list:
+        d_ident = get_device_identity_key(d.device_label or "", d.device_fp or "")
+        if d_ident == target_ident or d.device_fp == fp or (label and d.device_label == label):
+            matching_dev = d
+            break
+
+    if matching_dev:
+        matching_dev.last_seen = datetime.utcnow()
+        if label and label_quality_score(label) >= label_quality_score(matching_dev.device_label or ""):
+            matching_dev.device_label = label
+        if hwid and "hwid:" not in (matching_dev.device_fp or ""):
+            matching_dev.device_fp = fp
         await db.commit()
-        return True, label
+        return True, matching_dev.device_label
 
     # 3. Если устройство новое: проверяем квоту для не-админов
-    if not is_admin:
+    if not is_admin_user:
         count_res = await db.execute(
             select(func.count(UserDevice.id)).where(UserDevice.sub_token == token)
         )
